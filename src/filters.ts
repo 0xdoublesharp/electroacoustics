@@ -1,9 +1,28 @@
-import type { Complex } from './complex.js'
+import { div, mul, type Complex } from './complex.js'
 
 export type FilterTransfer = Complex
 
 export type Lr24Kind = 'highpass' | 'lowpass'
 export type HighPassFilterType = 'LR24' | 'BW24'
+
+export interface BiquadCoefficients {
+  kind: 'biquad'
+  b0: number
+  b1: number
+  b2: number
+  a1: number
+  a2: number
+}
+
+export type ParametricEq = { frequencyHz: number; gainDb: number } & (
+  | { kind: 'peaking'; q: number }
+  | { kind: 'low-shelf' | 'high-shelf'; slope: number }
+)
+
+export interface DigitalFilterChain {
+  sampleRateHz: number
+  stages: readonly (ParametricEq | BiquadCoefficients)[]
+}
 
 export interface FilterChain {
   highpassHz?: number
@@ -13,6 +32,7 @@ export interface FilterChain {
   gainDb?: number
   /** Pure time delay. It changes phase but not magnitude-based limits. */
   delaySeconds?: number
+  digital?: Readonly<DigitalFilterChain>
 }
 
 const positive = (value: number) => Number.isFinite(value) && value > 0
@@ -20,6 +40,72 @@ const positive = (value: number) => Number.isFinite(value) && value > 0
 function validateFrequency(frequency: number, label: string): void {
   if (!positive(frequency))
     throw new RangeError(`${label} must be finite and greater than zero.`)
+}
+
+function validateBiquad({ b0, b1, b2, a1, a2 }: BiquadCoefficients): void {
+  if (![b0, b1, b2, a1, a2].every(Number.isFinite) || Math.abs(a2) >= 1 ||
+      1 + a2 <= Math.abs(a1))
+    throw new RangeError('Biquad coefficients must be finite with poles strictly inside the unit circle')
+}
+
+/** Normalized, bilinear-transform EQ coefficients. See the W3C Audio EQ Cookbook. */
+export function designBiquad(stage: Readonly<ParametricEq>, sampleRateHz: number): BiquadCoefficients {
+  validateFrequency(sampleRateHz, 'Sample rate')
+  validateFrequency(stage.frequencyHz, 'EQ frequency')
+  if (stage.frequencyHz >= sampleRateHz / 2 || !Number.isFinite(stage.gainDb))
+    throw new RangeError('EQ requires a finite gain and frequency below Nyquist')
+
+  const amplitude = 10 ** (stage.gainDb / 40)
+  const w = 2 * Math.PI * (stage.frequencyHz / sampleRateHz)
+  const cos = Math.cos(w)
+  const sin = Math.sin(w)
+  let b0: number, b1: number, b2: number, a0: number, a1: number, a2: number
+  if (stage.kind === 'peaking') {
+    validateFrequency(stage.q, 'Peaking Q')
+    const alpha = sin / (2 * stage.q)
+    b0 = 1 + alpha * amplitude
+    b1 = -2 * cos
+    b2 = 1 - alpha * amplitude
+    a0 = 1 + alpha / amplitude
+    a1 = b1
+    a2 = 1 - alpha / amplitude
+  } else {
+    if ((stage.kind !== 'low-shelf' && stage.kind !== 'high-shelf') ||
+        !positive(stage.slope) || stage.slope > 1)
+      throw new RangeError('Shelf slope must be greater than zero and at most one')
+    const sum = amplitude + 1
+    const difference = amplitude - 1
+    const edge = sin * Math.sqrt((amplitude ** 2 + 1) * (1 / stage.slope - 1) + 2 * amplitude)
+    const sign = stage.kind === 'low-shelf' ? 1 : -1
+    b0 = amplitude * (sum - sign * difference * cos + edge)
+    b1 = 2 * sign * amplitude * (difference - sign * sum * cos)
+    b2 = amplitude * (sum - sign * difference * cos - edge)
+    a0 = sum + sign * difference * cos + edge
+    a1 = -2 * sign * (difference + sign * sum * cos)
+    a2 = sum + sign * difference * cos - edge
+  }
+  const result: BiquadCoefficients = { kind: 'biquad', b0: b0 / a0, b1: b1 / a0,
+    b2: b2 / a0, a1: a1 / a0, a2: a2 / a0 }
+  validateBiquad(result)
+  return result
+}
+
+/** Evaluate (b0 + b1 z⁻¹ + b2 z⁻²) / (1 + a1 z⁻¹ + a2 z⁻²). */
+export function biquadTransfer(frequencyHz: number, sampleRateHz: number, coefficients: Readonly<BiquadCoefficients>): Complex {
+  validateFrequency(sampleRateHz, 'Sample rate')
+  if (!Number.isFinite(frequencyHz) || frequencyHz < 0 || frequencyHz > sampleRateHz / 2)
+    throw new RangeError('Biquad frequency must be between DC and Nyquist')
+  validateBiquad(coefficients)
+  const { b0, b1, b2, a1, a2 } = coefficients
+  const w = 2 * Math.PI * (frequencyHz / sampleRateHz)
+  // Multiply both polynomials by z to avoid two evaluations of z⁻².
+  const cos = Math.cos(w)
+  const sin = Math.sin(w)
+  const result = div({ re: b1 + (b0 + b2) * cos, im: (b0 - b2) * sin },
+    { re: a1 + (1 + a2) * cos, im: (1 - a2) * sin })
+  if (!Number.isFinite(result.re) || !Number.isFinite(result.im))
+    throw new RangeError('Biquad response exceeds the supported numeric range')
+  return result
 }
 
 /** Fourth-order Linkwitz-Riley voltage transfer using exp(j omega t). */
@@ -134,6 +220,15 @@ export function composeFilters(
     transfer = {
       re: transfer.re * stage.re - transfer.im * stage.im,
       im: transfer.re * stage.im + transfer.im * stage.re,
+    }
+  }
+  if (chain.digital) {
+    const { sampleRateHz, stages } = chain.digital
+    validateFrequency(sampleRateHz, 'Sample rate')
+    if (frequency > sampleRateHz / 2) throw new RangeError('Digital filter frequency exceeds Nyquist')
+    for (const stage of stages) {
+      const coefficients = stage.kind === 'biquad' ? stage : designBiquad(stage, sampleRateHz)
+      transfer = mul(transfer, biquadTransfer(frequency, sampleRateHz, coefficients))
     }
   }
   const gain = 10 ** (gainDb / 20)

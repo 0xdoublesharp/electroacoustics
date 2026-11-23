@@ -1,4 +1,6 @@
 import { composeFilters, type FilterChain } from './filters.js'
+import { magnitude } from './complex.js'
+import type { CircuitInput, CircuitPoint } from './circuit.js'
 
 export interface OperatingPoint {
   frequency: number
@@ -7,6 +9,7 @@ export interface OperatingPoint {
   portMach: number
   impedanceOhms: number
   splDb?: number
+  radiatorExcursionPeakM?: number
 }
 
 export interface OperatingSource {
@@ -48,6 +51,18 @@ export interface VoltageLimitOptions {
 }
 
 export type VoltageLimitingFactor = 'excursion' | 'port-mach' | 'thermal-proxy'
+
+export type OutputLimitingFactor = VoltageLimitingFactor | 'amplifier-voltage' | 'amplifier-current' | 'radiator-excursion'
+
+export interface OutputLimitOptions {
+  filter?: Readonly<FilterChain>
+  maxPortMach?: number
+  maxAmplifierVoltageRms?: number
+  maxAmplifierCurrentRms?: number
+  maxRadiatorExcursionPeakM?: number
+  /** Planned amplifier RMS voltage at unity DSP gain. */
+  driveVoltageRms?: number
+}
 
 export interface FilteredVoltageLimit {
   safeAmplifierVoltage: number
@@ -109,6 +124,19 @@ function thermalVoltageLimit(
     (Math.log(rating) - Math.log(resistance)) / 2 +
       Math.log(impedance) + Math.log(parallel) - Math.log(gain),
   )
+}
+
+function visitSpeakerLimits(
+  source: OperatingSource, point: OperatingPoint, reference: number, gain: number,
+  maxPortMach: number | undefined, consider: (factor: VoltageLimitingFactor, voltage: number) => void,
+): void {
+  if (positive(source.xmaxMeters) && point.coneExcursionMeters > 0)
+    consider('excursion', linearVoltageLimit(source.xmaxMeters, point.coneExcursionMeters, reference, gain))
+  if (maxPortMach !== undefined && point.portMach > 0)
+    consider('port-mach', linearVoltageLimit(maxPortMach, point.portMach, reference, gain))
+  if (positive(source.ratedPowerWattsPerDriver))
+    consider('thermal-proxy', thermalVoltageLimit(source.ratedPowerWattsPerDriver,
+      source.dcResistancePerDriver, point.impedanceOhms, source.parallelStrings, gain))
 }
 
 function validateSource(source: OperatingSource): void {
@@ -297,42 +325,10 @@ export function analyzeFilteredVoltageLimit(
     collect(referencePortMach, mach, point.frequency)
     collect(referenceCoilLoss, coilLoss, point.frequency)
     if (gain === 0) continue
-    if (positive(source.xmaxMeters) && point.coneExcursionMeters > 0)
-      consider(
-        'excursion',
-        linearVoltageLimit(
-          source.xmaxMeters,
-          point.coneExcursionMeters,
-          referenceAmplifierVoltage,
-          gain,
-        ),
-        point,
-      )
-    if (maxPortMach !== undefined && point.portMach > 0)
-      consider(
-        'port-mach',
-        linearVoltageLimit(
-          maxPortMach,
-          point.portMach,
-          referenceAmplifierVoltage,
-          gain,
-        ),
-        point,
-      )
     // Bound I²R directly so rounding the reference power to zero cannot remove
     // an active thermal constraint.
-    if (positive(source.ratedPowerWattsPerDriver))
-      consider(
-        'thermal-proxy',
-        thermalVoltageLimit(
-          source.ratedPowerWattsPerDriver,
-          source.dcResistancePerDriver,
-          point.impedanceOhms,
-          source.parallelStrings,
-          gain,
-        ),
-        point,
-      )
+    visitSpeakerLimits(source, point, referenceAmplifierVoltage, gain, maxPortMach,
+      (factor, voltage) => consider(factor, voltage, point))
   }
   const selected = Object.entries(candidates)
     .filter(
@@ -379,4 +375,74 @@ export function analyzeFilteredVoltageLimit(
       nominalWattsAreCoilHeat: false,
     },
   }
+}
+
+/** Adapt unfiltered, reference-voltage circuit points for the operating analyzers. */
+export function operatingSourceFromCircuit(
+  input: CircuitInput,
+  points: readonly CircuitPoint[],
+  limits: Pick<OperatingSource, 'xmaxMeters' | 'ratedPowerWattsPerDriver'>,
+): OperatingSource {
+  const series = input.seriesDrivers ?? 1
+  return {
+    ...limits, perDriverReferenceVoltage: input.voltageRms / series,
+    seriesDriversPerString: series, parallelStrings: (input.quantity ?? 1) / series,
+    dcResistancePerDriver: input.driver.reOhms,
+    points: points.map((point) => ({ frequency: point.frequency,
+      coneExcursionMeters: point.coneExcursionPeakM, portVelocity: point.portVelocityPeakMps,
+      portMach: point.portMach, impedanceOhms: magnitude(point.impedanceOhms), splDb: point.splDb,
+      ...(point.radiatorExcursionPeakM === undefined ? {} : { radiatorExcursionPeakM: point.radiatorExcursionPeakM }),
+    })),
+  }
+}
+
+/** Single-tone ceiling and planned-drive margin at each unfiltered source sample. */
+export function analyzeOutputLimit(source: OperatingSource, options: Readonly<OutputLimitOptions> = {}) {
+  validateSource(source)
+  const reference = source.perDriverReferenceVoltage * source.seriesDriversPerString
+  const { maxPortMach, maxAmplifierVoltageRms, maxAmplifierCurrentRms, maxRadiatorExcursionPeakM, driveVoltageRms } = options
+  if (!positive(reference) || [maxPortMach, maxAmplifierVoltageRms, maxAmplifierCurrentRms,
+    maxRadiatorExcursionPeakM, driveVoltageRms].some((value) => value !== undefined && !positive(value)))
+    throw new RangeError('Output analysis requires positive, finite limits and voltages')
+
+  let bandInputLimit: OperatingMaximum | null = null
+  const points = source.points.map((point) => {
+    let maxTerminalVoltageRms = Infinity
+    let limitingFactor: OutputLimitingFactor | null = null
+    const consider = (factor: OutputLimitingFactor, voltage: number) => {
+      if (!positive(voltage)) throw new RangeError('Output limit exceeds the supported numeric range')
+      if (voltage < maxTerminalVoltageRms) {
+        maxTerminalVoltageRms = voltage
+        limitingFactor = factor
+      }
+    }
+    visitSpeakerLimits(source, point, reference, 1, maxPortMach, consider)
+    if (maxAmplifierVoltageRms !== undefined) consider('amplifier-voltage', maxAmplifierVoltageRms)
+    if (maxAmplifierCurrentRms !== undefined)
+      consider('amplifier-current', maxAmplifierCurrentRms * point.impedanceOhms)
+    if (maxRadiatorExcursionPeakM !== undefined) {
+      const travel = point.radiatorExcursionPeakM
+      if (travel === undefined || !nonnegative(travel)) throw new RangeError('Missing or invalid radiator excursion')
+      if (travel > 0) consider('radiator-excursion', linearVoltageLimit(maxRadiatorExcursionPeakM, travel, reference, 1))
+    }
+
+    const gain = magnitude(composeFilters(point.frequency, options.filter))
+    const terminal = limitingFactor === null ? null : maxTerminalVoltageRms
+    const inputLimit = terminal === null || gain === 0 ? null : terminal / gain
+    if (inputLimit !== null && !positive(inputLimit)) throw new RangeError('DSP input limit exceeds the supported numeric range')
+    if (inputLimit !== null && (bandInputLimit === null || inputLimit < bandInputLimit.value))
+      bandInputLimit = { value: inputLimit, frequency: point.frequency }
+    const maxSplDb = terminal === null || gain === 0 || point.splDb === undefined ? null :
+      point.splDb + 20 * (Math.log10(terminal) - Math.log10(reference))
+    const driveGainDb = driveVoltageRms === undefined || gain === 0 ? null :
+      20 * (Math.log10(driveVoltageRms) + Math.log10(gain) - Math.log10(reference))
+    return {
+      frequency: point.frequency, limitingFactor: limitingFactor as OutputLimitingFactor | null,
+      maxTerminalVoltageRms: terminal, maxInputVoltageRms: inputLimit, maxSplDb,
+      plannedSplDb: driveGainDb === null || point.splDb === undefined ? null : point.splDb + driveGainDb,
+      headroomDb: inputLimit === null || driveVoltageRms === undefined ? null :
+        20 * (Math.log10(inputLimit) - Math.log10(driveVoltageRms)),
+    }
+  })
+  return { points, bandInputLimit: bandInputLimit as OperatingMaximum | null }
 }

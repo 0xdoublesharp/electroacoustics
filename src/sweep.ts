@@ -7,6 +7,7 @@ import { magnitude, mul } from './complex.js'
 import { ductPathTuning } from './ductAcoustics.js'
 import { composeFilters, type FilterChain } from './filters.js'
 import { sampleAdaptive, type SamplingOptions } from './sampling.js'
+import { passiveRadiatorResonanceHz, passiveRadiatorTuningHz } from './passiveRadiator.js'
 
 export interface SweepOptions extends SamplingOptions {
   filter?: FilterChain
@@ -22,6 +23,8 @@ export function referenceResonanceHz(input: CircuitInput): number {
       input.volumeM3,
       input.medium.soundSpeedMps,
     )
+  if (input.passiveRadiator)
+    return passiveRadiatorTuningHz(input.passiveRadiator, input.volumeM3, input.medium)
   return input.port
     ? (input.medium.soundSpeedMps / (2 * Math.PI)) *
         Math.sqrt(
@@ -50,6 +53,10 @@ function filteredPoint(
     currentAmps: mul(point.currentAmps, transfer),
     coneVolumeVelocityM3s: mul(point.coneVolumeVelocityM3s, transfer),
     mouthVolumeVelocityM3s: mul(point.mouthVolumeVelocityM3s, transfer),
+    ...(point.radiatorVolumeVelocityM3s === undefined ? {} : {
+      radiatorVolumeVelocityM3s: mul(point.radiatorVolumeVelocityM3s, transfer),
+      radiatorExcursionPeakM: point.radiatorExcursionPeakM! * gain,
+    }),
     splDb: 20 * Math.log10(Math.max(magnitude(pressure), 1e-12) / 20e-6),
     coneExcursionPeakM: point.coneExcursionPeakM * gain,
     portVelocityPeakMps: point.portVelocityPeakMps * gain,
@@ -63,6 +70,8 @@ function filteredPoint(
       ...Object.values(result.currentAmps),
       ...Object.values(result.coneVolumeVelocityM3s),
       ...Object.values(result.mouthVolumeVelocityM3s),
+      ...Object.values(result.radiatorVolumeVelocityM3s ?? {}),
+      result.radiatorExcursionPeakM ?? 0,
       result.splDb,
       result.coneExcursionPeakM,
       result.portVelocityPeakMps,
@@ -85,10 +94,14 @@ export function sweepCircuit(input: CircuitInput, options: SweepOptions) {
     resonanceHz,
     ...(options.landmarksHz ?? []),
   ]
+  if (input.passiveRadiator) landmarks.push(passiveRadiatorResonanceHz(input.passiveRadiator))
   if (options.filter?.highpassHz !== undefined)
     landmarks.push(options.filter.highpassHz)
   if (options.filter?.lowpassHz !== undefined)
     landmarks.push(options.filter.lowpassHz)
+  for (const stage of options.filter?.digital?.stages ?? []) {
+    if (stage.kind !== 'biquad') landmarks.push(stage.frequencyHz)
+  }
   const sampled = sampleAdaptive(
     (frequency) => filteredPoint(circuit(frequency), options.filter),
     (p) => [
@@ -97,6 +110,7 @@ export function sweepCircuit(input: CircuitInput, options: SweepOptions) {
       magnitude(p.impedanceOhms),
       p.coneExcursionPeakM,
       p.portVelocityPeakMps,
+      p.radiatorExcursionPeakM ?? 0,
     ],
     { ...options, landmarksHz: landmarks },
   )

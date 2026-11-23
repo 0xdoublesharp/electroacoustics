@@ -126,3 +126,36 @@ describe('LR24 filters', () => {
     expect(high.im).toBeCloseTo(0)
   })
 })
+import * as digital from './index.js'
+import { circuitFixture } from './testFixtures.js'
+
+it('evaluates digital peaking and shelf gains and composes them at an explicit sample rate', () => {
+  const peak = { kind: 'peaking' as const, frequencyHz: 80, gainDb: 6, q: 3 }
+  const low = { kind: 'low-shelf' as const, frequencyHz: 80, gainDb: 12, slope: 1 }
+  const high = { ...low, kind: 'high-shelf' as const }
+  const rate = 48000
+  for (const stage of [peak, low, high]) {
+    const b = digital.designBiquad(stage, rate)
+    const atCorner = digital.biquadTransfer(80, rate, b)
+    expect(20 * Math.log10(digital.magnitude(atCorner))).toBeCloseTo(6, 8)
+  }
+  const chain = { digital: { sampleRateHz: rate, stages: [peak, high] } }
+  expect(digital.magnitude(digital.composeFilters(80, chain))).toBeCloseTo(10 ** (12 / 20), 8)
+  expect(digital.magnitude(digital.biquadTransfer(0, rate, digital.designBiquad(low, rate)))).toBeCloseTo(10 ** (12 / 20), 8)
+  expect(digital.magnitude(digital.biquadTransfer(rate / 2, rate, digital.designBiquad(high, rate)))).toBeCloseTo(10 ** (12 / 20), 8)
+})
+
+it('handles imported biquads in a sweep and rejects invalid DSP inputs', () => {
+  const peak = { kind: 'peaking' as const, frequencyHz: 53, gainDb: -6, q: 3 }
+  const raw = { kind: 'biquad' as const, b0: 0.5, b1: 0, b2: 0, a1: 0, a2: 0 }
+  const filter = { digital: { sampleRateHz: 48000, stages: [peak, raw] } }
+  const result = digital.sweepCircuit(circuitFixture, { minHz: 20, maxHz: 100, relativeTolerance: 0.02, filter })
+  expect(result.points.some((point) => point.frequency === 53)).toBe(true)
+  expect(digital.composeFilters(53, { digital: { ...filter.digital, stages: [raw] } }).re).toBeCloseTo(0.5)
+  expect(() => digital.composeFilters(24001, filter)).toThrow(/Nyquist/)
+  expect(() => digital.biquadTransfer(-1, 48000, raw)).toThrow(/Nyquist/)
+  expect(() => digital.designBiquad(peak, 106)).toThrow(/Nyquist/)
+  expect(() => digital.designBiquad({ kind: 'low-shelf', frequencyHz: 53, gainDb: 3, slope: 2 }, 48000)).toThrow(/slope/)
+  expect(() => digital.biquadTransfer(53, 48000, { ...raw, a1: 2 })).toThrow(/unit circle/)
+  expect(() => digital.biquadTransfer(0, 48000, { ...raw, b0: Number.MAX_VALUE, b2: Number.MAX_VALUE })).toThrow(/numeric range/)
+})

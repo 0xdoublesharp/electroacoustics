@@ -13,6 +13,8 @@ import {
   ductPathPeakVelocityRatio,
   type DuctPath,
 } from './ductAcoustics.js'
+import { passiveRadiatorTuningHz, radiatorParameters, type PassiveRadiator } from './passiveRadiator.js'
+import { driverMotor } from './driverMotor.js'
 
 export interface ThieleSmallDriver {
   fsHz: number
@@ -43,6 +45,8 @@ export interface CircuitInput {
     quality: number
     ductPath?: DuctPath
   }
+  /** Identical passive radiators in the cavity. Mutually exclusive with a port. */
+  passiveRadiator?: PassiveRadiator
   distanceM?: number
   /** Defaults to 2 pi half-space; 4 pi represents a free-field monopole. */
   radiationSolidAngle?: number
@@ -55,6 +59,8 @@ export interface CircuitPoint {
   /** Outward front cone and mouth flows in RMS m³/s. Pressure also includes leakage flow. */
   coneVolumeVelocityM3s: Complex
   mouthVolumeVelocityM3s: Complex
+  radiatorVolumeVelocityM3s?: Complex
+  radiatorExcursionPeakM?: number
   /** Source pressure at the reference distance, without propagation delay. RMS Pa. */
   pressurePa: Complex
   splDb: number
@@ -143,6 +149,9 @@ export function createCircuit(
     )
   }
   const port = input.port
+  const radiator = input.passiveRadiator ? { ...input.passiveRadiator } : undefined
+  if (port && radiator) throw new RangeError('Choose a vent or passive radiators')
+  const radiatorModel = radiator ? radiatorParameters(radiator) : undefined
   if (
     port &&
     (!quality(port.quality) ||
@@ -155,11 +164,7 @@ export function createCircuit(
     )
   const rho = medium.densityKgM3,
     speed = medium.soundSpeedMps
-  const cms = driver.vasM3 / (rho * speed ** 2 * driver.sdM2 ** 2)
-  const mms = 1 / ((2 * Math.PI * driver.fsHz) ** 2 * cms)
-  const rms = (2 * Math.PI * driver.fsHz * mms) / driver.qms
-  const blSquared =
-    (2 * Math.PI * driver.fsHz * mms * driver.reOhms) / driver.qes
+  const { cms, mms, rms, blSquared } = driverMotor(driver, medium)
   const bl = Math.sqrt(blSquared)
   const cab = volumeM3 / (rho * speed ** 2)
   const path = port?.ductPath
@@ -172,11 +177,12 @@ export function createCircuit(
   const mass = port ? (rho * length) / area : 0
   const omega0 = port
     ? 1 / Math.sqrt(mass * cab)
-    : 2 *
+    : radiator ? 2 * Math.PI * passiveRadiatorTuningHz(radiator, volumeM3, medium) : 2 *
       Math.PI *
       driver.fsHz *
       Math.sqrt(1 + (driver.vasM3 * quantity) / volumeM3)
-  const characteristic = port ? Math.sqrt(mass / cab) : 1 / (omega0 * cab)
+  const characteristic = port ? Math.sqrt(mass / cab) : radiator && radiatorModel
+    ? Math.sqrt(radiator.movingMassKg / radiatorModel.areaTerm / cab) : 1 / (omega0 * cab)
   const portResistance = port ? (omega0 * mass) / port.quality : 0
   const leakAdmittance = 1 / (input.leakageQuality * characteristic)
   const lossAdmittance =
@@ -194,13 +200,21 @@ export function createCircuit(
     const yPort = port
       ? reciprocal(duct?.impedance ?? c(portResistance, omega * mass))
       : c(0)
-    const yTotal = add(add(c(0, omega * cab), yPort), c(lossAdmittance))
+    const baseAdmittance = add(add(c(0, omega * cab), yPort), c(lossAdmittance))
+    // Clear the radiator impedance too, so a lossless free radiator resonance
+    // does not form an infinite intermediate admittance.
+    const radiatorImpedance = radiator && radiatorModel
+      ? c(radiator.mechanicalResistanceNsPerM, omega * radiator.movingMassKg - radiatorModel.stiffness / omega)
+      : c(1)
+    const yTotal = radiatorModel
+      ? add(mul(baseAdmittance, radiatorImpedance), c(radiatorModel.areaTerm))
+      : baseAdmittance
     // Multiply the mechanical equation through by cavity admittance. At
     // exact lossless tuning yTotal=0: cone motion vanishes but mouth flow and
     // current remain finite. Forming 1/yTotal first would lose that limit.
     const mechanicalNumerator = add(
       mul(c(rms, omega * mms - 1 / (omega * cms)), yTotal),
-      c(quantity * driver.sdM2 ** 2),
+      mul(c(quantity * driver.sdM2 ** 2), radiatorImpedance),
     )
     const zElectrical = c(driver.reOhms, omega * driver.leHenries)
     const denominator = add(
@@ -226,11 +240,14 @@ export function createCircuit(
     // Leaks vent to the room and radiate (Small 1973: U0 = UD + UP + UL);
     // absorption stays inside the cavity.
     const leakFlow = div(
-      c(-drive * driver.sdM2 * quantity * leakAdmittance),
+      mul(c(-drive * driver.sdM2 * quantity * leakAdmittance), radiatorImpedance),
       denominator,
     )
+    const radiatorFlow = radiatorModel ? div(c(-drive * driver.sdM2 * quantity * radiatorModel.areaTerm), denominator) : c(0)
+    const radiatorTravel = radiator && radiatorModel
+      ? (Math.SQRT2 * magnitude(radiatorFlow)) / (omega * radiator.sdM2 * radiatorModel.quantity) : 0
     const pressure = mul(
-      add(add(coneFlow, mouthFlow), leakFlow),
+      add(add(add(coneFlow, mouthFlow), leakFlow), radiatorFlow),
       c(0, (rho * omega) / (solidAngle * distance)),
     )
     const portVelocity = !port
@@ -246,6 +263,7 @@ export function createCircuit(
       currentAmps: current,
       coneVolumeVelocityM3s: coneFlow,
       mouthVolumeVelocityM3s: mouthFlow,
+      ...(radiator ? { radiatorVolumeVelocityM3s: radiatorFlow, radiatorExcursionPeakM: radiatorTravel } : {}),
       pressurePa: pressure,
       splDb: 20 * Math.log10(Math.max(magnitude(pressure), 1e-12) / 20e-6),
       coneExcursionPeakM: (Math.SQRT2 * magnitude(velocity)) / omega,
@@ -261,6 +279,7 @@ export function createCircuit(
         ...Object.values(current),
         ...Object.values(coneFlow),
         ...Object.values(mouthFlow),
+        ...Object.values(radiatorFlow), radiatorTravel,
         ...Object.values(pressure),
         result.splDb,
         result.coneExcursionPeakM,

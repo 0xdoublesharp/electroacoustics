@@ -1,6 +1,7 @@
 module
 
 import Electroacoustics.Circuit
+import Electroacoustics.Design
 import Electroacoustics.Duct
 import Electroacoustics.Operating
 import Lean.Elab.Command
@@ -19,6 +20,13 @@ run_cmd do
     ``Circuit.denominator_at_lossless_tuning,
     ``Circuit.rewired_power,
     ``Circuit.rewired_impedance,
+    ``Design.sealed_volume_round_trip,
+    ``Design.duct_volume_round_trip,
+    ``Design.radiator_mass_round_trip,
+    ``Design.terminal_ceiling_from_input,
+    ``Design.biquad_centered_quotient,
+    ``Design.moving_mass_from_added_mass,
+    ``Design.vas_from_closed_box,
     ``Duct.tuning_residual_zero_iff,
     ``Duct.pole_is_not_a_tuning,
     ``Duct.bisect_preserves_bracket,

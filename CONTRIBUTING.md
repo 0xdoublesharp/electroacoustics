@@ -11,7 +11,7 @@ npm ci
 npm run check
 ```
 
-The check typechecks the source, runs the solver tests, and installs the actual npm archive in a clean consumer to verify its contents, ESM entry point, and TypeScript declarations. Add a synthetic regression when changing solver behavior. Document changed units, phase conventions, defaults, or error behavior in the pull request.
+The check typechecks the source, requires 100% statement, branch, function, and line coverage, and installs the actual npm archive in a clean consumer to verify its contents, ESM entry point, and TypeScript declarations. Add a synthetic regression when changing solver behavior. Document changed units, phase conventions, defaults, or error behavior in the pull request.
 
 ## Run the invariant tests
 
