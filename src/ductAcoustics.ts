@@ -50,8 +50,8 @@ function validateAcoustic(
       'Duct frequency or medium exceeds supported numerical range',
     )
 }
-function junctionLength(path: DuctPath) {
-  return path.junctionInertanceLengthsMeters?.reduce((a, b) => a + b, 0) ?? 0
+function junctionLength(lengths: readonly number[]) {
+  return lengths.reduce((a, b) => a + b, 0)
 }
 function validateExtensions(path: DuctPath) {
   const junctions = path.junctionInertanceLengthsMeters
@@ -143,7 +143,7 @@ function rawEquivalentLength(path: DuctPath): number {
       : sections * path.inertanceFactor)
   return path.junctionInertanceLengthsMeters === undefined
     ? base
-    : base + junctionLength(path)
+    : base + junctionLength(path.junctionInertanceLengthsMeters)
 }
 
 // [p_in,U_in] = [a,j*b;j*c,d] [p_out,U_out], with exp(j*omega*t).
@@ -234,7 +234,8 @@ function terms(
       density *
       (path.junctionInertanceLengthsMeters === undefined
         ? path.inletCorrectionMeters
-        : path.inletCorrectionMeters + junctionLength(path))) /
+        : path.inletCorrectionMeters +
+          junctionLength(path.junctionInertanceLengthsMeters))) /
       path.sections[0]!.inletAreaSquareMeters) *
       denominator
   finiteResult(numerator, denominator)
@@ -255,11 +256,7 @@ export function ductPathImpedance(
 ) {
   validate(path)
   validateAcoustic(frequency, soundSpeed, density)
-  if (
-    ![frequency, soundSpeed, density].every(positive) ||
-    !Number.isFinite(resistance) ||
-    resistance < 0
-  )
+  if (!Number.isFinite(resistance) || resistance < 0)
     throw new RangeError('Invalid duct acoustic parameters')
   const { numerator, denominator } = terms(path, frequency, soundSpeed, density)
   // Bound exact pole evaluation to keep downstream complex arithmetic finite.
@@ -327,25 +324,28 @@ export function ductPathTuning(
       path.count * t.denominator
     )
   }
-  let low = Math.min(estimate, soundSpeed / physicalLength) * 1e-6
-  const step = Math.min(estimate / 32, soundSpeed / physicalLength / 128)
-  let high = low
+  const { k: wavenumberPerAngularFrequency } = sectionMedium(path, 1, soundSpeed, 1)
+  const phaseFrequency = 1 / (physicalLength * wavenumberPerAngularFrequency)
+  const step = Math.min(estimate / 32, phaseFrequency / 128)
+  const maxHz = 1e6
+  // At zero frequency the limiting residual is -count. Its matrix formula
+  // divides by frequency, so start the bracket there without evaluating it.
+  let low = 0
   for (let i = 0; i < 4096; i++) {
-    high += step
-    if (high > 1e6)
-      throw new RangeError('Duct tuning exceeds supported 1 MHz search range')
+    let high = Math.min(low + step, maxHz)
     if (residual(high) >= 0) {
       for (let n = 0; n < 70; n++) {
         const mid = (low + high) / 2
-        if (residual(mid) > 0) high = mid
+        if (residual(mid) >= 0) high = mid
         else low = mid
       }
       return (low + high) / 2
     }
+    if (high === maxHz) break
     low = high
   }
   throw new RangeError(
-    'Could not bracket duct tuning within 4096 bounded search steps',
+    'Could not bracket duct tuning within 4096 bounded steps and the supported 1 MHz search range',
   )
 }
 

@@ -198,7 +198,11 @@ function initialFrequencies(
     else if (nearIndex < 0) frequencies.push(landmark)
   }
   const result = [...new Set(frequencies)].sort((a, b) => a - b)
-  if (result.length < count)
+  if (
+    result.length < count ||
+    result[0] !== minHz ||
+    result.at(-1) !== maxHz
+  )
     throw new RangeError(
       'Frequency range exceeds supported numerical resolution',
     )

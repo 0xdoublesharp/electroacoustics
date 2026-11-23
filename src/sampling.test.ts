@@ -160,6 +160,28 @@ describe('adaptive frequency sampling', () => {
     expect(result.samples.at(-1)!.frequency).toBe(maxHz)
   })
 
+  it.each([1, 1e100, 1e-100])(
+    'rejects an initial grid between adjacent frequencies near %s before evaluation',
+    (minHz) => {
+      const frequencyBits = new DataView(new ArrayBuffer(8))
+      frequencyBits.setFloat64(0, minHz)
+      frequencyBits.setBigUint64(0, frequencyBits.getBigUint64(0) + 1n)
+      const maxHz = frequencyBits.getFloat64(0)
+      let evaluations = 0
+      expect(() =>
+        sampleAdaptive(
+          (frequency) => {
+            evaluations++
+            return frequency
+          },
+          (value) => [value],
+          { minHz, maxHz, initialPoints: 3, maxPoints: 4 },
+        ),
+      ).toThrow(/supported numerical resolution/)
+      expect(evaluations).toBe(0)
+    },
+  )
+
   it('reports unresolved intervals when the evaluation budget cannot probe them', () => {
     let evaluations = 0
     const result = sampleAdaptive(

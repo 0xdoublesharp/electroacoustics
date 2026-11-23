@@ -129,6 +129,138 @@ describe('operating analysis', () => {
     expect(result.excursion.value).toBeCloseTo(1.36)
   })
 
+  it.each([[0, 8], [800, Infinity]])(
+    'rejects invalid nominal drive of %s watts and %s ohms',
+    (watts, ohms) => {
+      expect(() => analyzeOperatingDrive(source, watts, ohms, () => 0)).toThrow(
+        /drive and nominal impedance must be positive/,
+      )
+    },
+  )
+
+  it('rejects nonfinite filter callbacks and overflow from finite gain', () => {
+    expect(() => analyzeOperatingDrive(source, 800, 8, () => NaN)).toThrow(
+      /filter gain is invalid/,
+    )
+    expect(() => analyzeOperatingDrive(source, 800, 8, () => 4000)).toThrow(
+      /drive exceeds the supported numeric range/,
+    )
+  })
+
+  it('rejects invalid Mach limits and unrepresentable constraint voltages', () => {
+    expect(() => analyzeFilteredVoltageLimit(source, { maxPortMach: 0 })).toThrow(
+      /maximum port Mach must be positive and finite/i,
+    )
+    expect(() =>
+      analyzeFilteredVoltageLimit(source, { maxPortMach: Number.MAX_VALUE }),
+    ).toThrow(/constraints exceed the supported numeric range/)
+  })
+
+  it('rejects overflow in the wired reference even with an explicit voltage', () => {
+    const array = {
+      ...source,
+      perDriverReferenceVoltage: Number.MAX_VALUE,
+      seriesDriversPerString: 2,
+    }
+    expect(() =>
+      analyzeFilteredVoltageLimit(array, { referenceAmplifierVoltage: 2 }),
+    ).toThrow(/reference amplifier voltage must be positive and finite/i)
+  })
+
+  it.each([-3100, -4000])(
+    'finds a finite thermal voltage limit with %s dB of filter gain',
+    (gainDb) => {
+      const result = analyzeFilteredVoltageLimit(
+        { ...source, xmaxMeters: 0 },
+        { filter: { gainDb } },
+      )
+      const gain = 10 ** (gainDb / 20)
+      // At the first sample I = V*g/10 and I²*5 must equal the 800 W rating.
+      const expected = (Math.sqrt(800 / 5) * 10) / gain
+      expect(result.limitingFactor).toBe('thermal-proxy')
+      expect(result.limitingFrequency).toBe(14)
+      expect(result.safeAmplifierVoltage / expected).toBeCloseTo(1, 12)
+      expect(result.safeSplDbAtLimitingFrequency).toBeCloseTo(
+        90 + 20 * Math.log10((Math.sqrt(800 / 5) * 10) / 2),
+        10,
+      )
+    },
+  )
+
+  it('keeps a finite thermal limit when the unity-gain voltage overflows', () => {
+    const result = analyzeFilteredVoltageLimit(
+      {
+        ...source,
+        perDriverReferenceVoltage: 1e-200,
+        dcResistancePerDriver: 1e-100,
+        ratedPowerWattsPerDriver: 1e300,
+        xmaxMeters: 0,
+        points: [{ ...source.points[0]!, impedanceOhms: 1e200 }],
+      },
+      { filter: { gainDb: 2000 } },
+    )
+    expect(result.limitingFactor).toBe('thermal-proxy')
+    expect(result.safeAmplifierVoltage / 1e300).toBeCloseTo(1, 12)
+  })
+
+  it.each([1e160, 1e-170])(
+    'keeps a linear voltage limit of %s when intermediate products are out of range',
+    (voltage) => {
+      const point = {
+        ...source.points[0]!,
+        impedanceOhms: voltage,
+        coneExcursionMeters: voltage,
+        portMach: voltage,
+      }
+      const array = {
+        ...source,
+        perDriverReferenceVoltage: voltage,
+        ratedPowerWattsPerDriver: 0,
+        points: [point],
+      }
+      const excursion = analyzeFilteredVoltageLimit({ ...array, xmaxMeters: voltage }, {})
+      const mach = analyzeFilteredVoltageLimit(
+        { ...array, xmaxMeters: 0 },
+        { maxPortMach: voltage },
+      )
+      expect(excursion.safeAmplifierVoltage / voltage).toBeCloseTo(1, 12)
+      expect(mach.safeAmplifierVoltage / voltage).toBeCloseTo(1, 12)
+    },
+  )
+
+  it('reports finite SPL when the linear pressure ratio overflows', () => {
+    const result = analyzeFilteredVoltageLimit(
+      {
+        ...source,
+        perDriverReferenceVoltage: 1e-250,
+        xmaxMeters: 1e200,
+        ratedPowerWattsPerDriver: 0,
+        points: [{ ...source.points[0]!, coneExcursionMeters: 1e-200 }],
+      },
+      { filter: { gainDb: 2000 } },
+    )
+    expect(result.safeAmplifierVoltage / 1e50).toBeCloseTo(1, 12)
+    expect(result.safeSplDbAtLimitingFrequency).toBeCloseTo(8090, 8)
+  })
+
+  it.each([1e200, 1e-200])(
+    'preserves representable nominal drive voltage when the watts-ohms product is out of range',
+    (voltage) => {
+      const result = analyzeOperatingDrive(
+        {
+          ...source,
+          perDriverReferenceVoltage: voltage,
+          points: [{ ...source.points[0]!, impedanceOhms: voltage }],
+        },
+        voltage,
+        voltage,
+        () => 0,
+      )
+      expect(result.perDriverVoltage / voltage).toBeCloseTo(1, 12)
+      expect(result.coilLossWattsPerDriver.value).toBeCloseTo(source.dcResistancePerDriver)
+    },
+  )
+
   it('rejects total array power overflow even when per-driver drive remains finite', () => {
     expect(() =>
       analyzeOperatingDrive(

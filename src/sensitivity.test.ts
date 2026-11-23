@@ -52,14 +52,35 @@ describe('explicit sensitivity scenarios', () => {
     const original = JSON.stringify(vented)
     const result = api.analyzeSensitivity(
       vented,
-      [{ parameter: 'port.effectiveLengthM', values: [0.8] }],
+      [
+        { parameter: 'port.effectiveLengthM', values: [0.8] },
+        { parameter: 'port.lengthScale', values: [2] },
+      ],
       { minHz: 10, maxHz: 150 },
     )
     expect(result.scenarios[0]!.metrics.referenceResonanceHz).toBeCloseTo(
       result.baseline.metrics.referenceResonanceHz / Math.SQRT2,
       10,
     )
+    expect(result.scenarios[1]!.points).toEqual(result.scenarios[0]!.points)
     expect(JSON.stringify(vented)).toBe(original)
+  })
+
+  it('accepts zero inductance and keeps out-of-band resonance off the grid', () => {
+    const input = {
+      ...circuitFixture,
+      driver: { ...circuitFixture.driver, leHenries: 0.002 },
+    }
+    const result = api.analyzeSensitivity(
+      input,
+      [{ parameter: 'driver.leHenries', values: [0] }],
+      { minHz: 50, maxHz: 100, points: 3 },
+    )
+    const scenario = result.scenarios[0]!
+    expect(scenario.metrics.referenceResonanceHz).toBeLessThan(50)
+    expect(scenario.points).toHaveLength(3)
+    expect(scenario.points[0]).toEqual(api.createCircuit(circuitFixture)(50))
+    expect(scenario.maxAbsSplDeltaDb).toBeGreaterThan(0)
   })
   it('scales distributed physical lengths while preserving end corrections and input ownership', () => {
     const path: api.DuctPath = {

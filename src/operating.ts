@@ -71,6 +71,45 @@ export interface FilteredVoltageLimit {
 
 const positive = (value: number) => Number.isFinite(value) && value > 0
 const nonnegative = (value: number) => Number.isFinite(value) && value >= 0
+const positiveNormal = (value: number) =>
+  Number.isFinite(value) && value >= 2 ** -1022
+
+function linearVoltageLimit(
+  rating: number,
+  response: number,
+  reference: number,
+  gain: number,
+): number {
+  const numerator = reference * rating
+  const unfiltered = numerator / response
+  if (positiveNormal(numerator) && positiveNormal(unfiltered))
+    return unfiltered / gain
+  return Math.exp(
+    Math.log(reference) + Math.log(rating) - Math.log(response) - Math.log(gain),
+  )
+}
+
+function thermalVoltageLimit(
+  rating: number,
+  resistance: number,
+  impedance: number,
+  parallel: number,
+  gain: number,
+): number {
+  const currentLimit = Math.sqrt(rating) / Math.sqrt(resistance)
+  const voltageAtUnityGain = currentLimit * impedance
+  const voltage = voltageAtUnityGain / gain
+  if (
+    positiveNormal(currentLimit) &&
+    positiveNormal(voltageAtUnityGain) &&
+    positiveNormal(voltage)
+  )
+    return voltage * parallel
+  return Math.exp(
+    (Math.log(rating) - Math.log(resistance)) / 2 +
+      Math.log(impedance) + Math.log(parallel) - Math.log(gain),
+  )
+}
 
 function validateSource(source: OperatingSource): void {
   if (
@@ -125,7 +164,10 @@ export function analyzeOperatingDrive(
     throw new RangeError(
       'Operating drive and nominal impedance must be positive.',
     )
-  const perDriverVoltage = Math.sqrt(wattsPerDriver * nominalOhmsPerDriver)
+  const wattsOhms = wattsPerDriver * nominalOhmsPerDriver
+  const perDriverVoltage = positiveNormal(wattsOhms)
+    ? Math.sqrt(wattsOhms)
+    : Math.sqrt(wattsPerDriver) * Math.sqrt(nominalOhmsPerDriver)
   const amplifierVoltage = perDriverVoltage * source.seriesDriversPerString
   const scale = perDriverVoltage / source.perDriverReferenceVoltage
   const nominalTotalWatts =
@@ -190,7 +232,10 @@ export function analyzeFilteredVoltageLimit(
     source.perDriverReferenceVoltage * source.seriesDriversPerString
   const referenceAmplifierVoltage =
     options.referenceAmplifierVoltage ?? sourceAmplifierReference
-  if (!positive(referenceAmplifierVoltage))
+  if (
+    !positive(sourceAmplifierReference) ||
+    !positive(referenceAmplifierVoltage)
+  )
     throw new RangeError(
       'Reference amplifier voltage must be positive and finite.',
     )
@@ -255,22 +300,37 @@ export function analyzeFilteredVoltageLimit(
     if (positive(source.xmaxMeters) && point.coneExcursionMeters > 0)
       consider(
         'excursion',
-        (referenceAmplifierVoltage * source.xmaxMeters) /
-          point.coneExcursionMeters /
+        linearVoltageLimit(
+          source.xmaxMeters,
+          point.coneExcursionMeters,
+          referenceAmplifierVoltage,
           gain,
+        ),
         point,
       )
     if (maxPortMach !== undefined && point.portMach > 0)
       consider(
         'port-mach',
-        (referenceAmplifierVoltage * maxPortMach) / point.portMach / gain,
+        linearVoltageLimit(
+          maxPortMach,
+          point.portMach,
+          referenceAmplifierVoltage,
+          gain,
+        ),
         point,
       )
-    if (positive(source.ratedPowerWattsPerDriver) && coilLoss > 0)
+    // Bound I²R directly so rounding the reference power to zero cannot remove
+    // an active thermal constraint.
+    if (positive(source.ratedPowerWattsPerDriver))
       consider(
         'thermal-proxy',
-        referenceAmplifierVoltage *
-          Math.sqrt(source.ratedPowerWattsPerDriver / coilLoss),
+        thermalVoltageLimit(
+          source.ratedPowerWattsPerDriver,
+          source.dcResistancePerDriver,
+          point.impedanceOhms,
+          source.parallelStrings,
+          gain,
+        ),
         point,
       )
   }
@@ -301,9 +361,8 @@ export function analyzeFilteredVoltageLimit(
         ? null
         : limitingPoint.splDb +
           20 *
-            Math.log10(
-              (selected[1].value * limitingGain) / referenceAmplifierVoltage,
-            ),
+            (Math.log10(selected[1].value) + Math.log10(limitingGain) -
+              Math.log10(referenceAmplifierVoltage)),
     evaluatedFrequencyRange: {
       minHz: source.points[0]!.frequency,
       maxHz: source.points.at(-1)!.frequency,

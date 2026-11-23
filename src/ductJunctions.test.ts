@@ -128,6 +128,16 @@ describe('signed junction inertances and reactive boundary-layer factors', () =>
       ductPathTuning(base(), 0.1, 343),
     )
   })
+
+  it.each([
+    ['inertanceFactor', 'complianceFactor'],
+    ['complianceFactor', 'inertanceFactor'],
+  ] as const)('uses unity for an omitted %s', (omitted, supplied) => {
+    const duct = { ...base(), [supplied]: 1.1 }
+    expect(ductPathImpedance(duct, 100, 343, 1.2)).toEqual(
+      ductPathImpedance({ ...duct, [omitted]: 1 }, 100, 343, 1.2),
+    )
+  })
 })
 
 describe('tuning residual', () => {

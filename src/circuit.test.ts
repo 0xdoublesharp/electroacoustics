@@ -235,6 +235,50 @@ describe('SI electroacoustic circuit', () => {
     expect(circuit(25)).toEqual(before)
     for (const f of [0, -1, Infinity, NaN]) expect(() => circuit(f)).toThrow()
   })
+
+  it.each([{ areaM2: 0.01 }, { effectiveLengthM: 0.4 }])(
+    'requires both area and effective length for a lumped port with %j',
+    (port) => {
+      expect(() =>
+        api.createCircuit({ ...fixture, port: { ...port, quality: 7 } }),
+      ).toThrow(/port requires positive area, effective length/i)
+    },
+  )
+
+  it('rejects finite inputs that overflow derived parameters or phasors', () => {
+    expect(() =>
+      api.createCircuit({
+        ...fixture,
+        medium: { ...fixture.medium, soundSpeedMps: Number.MAX_VALUE },
+      }),
+    ).toThrow(/parameters exceed finite numerical support/)
+    expect(() => api.createCircuit(fixture)(Number.MAX_VALUE)).toThrow(
+      /evaluation exceeds finite numerical support/,
+    )
+  })
+
+  it('owns a snapshot of signed duct junction corrections', () => {
+    const ductPath: api.DuctPath = {
+      count: 1,
+      inletCorrectionMeters: 0,
+      outletCorrectionMeters: 0,
+      junctionInertanceLengthsMeters: [0.03, -0.01],
+      sections: [
+        {
+          profile: 'straight',
+          lengthMeters: 0.4,
+          inletAreaSquareMeters: 0.01,
+          outletAreaSquareMeters: 0.01,
+        },
+      ],
+    }
+    const input = { ...fixture, port: { quality: 7, ductPath } }
+    const circuit = api.createCircuit(input)
+    const before = circuit(40)
+    ductPath.junctionInertanceLengthsMeters![0] = 0.1
+    expect(circuit(40)).toEqual(before)
+    expect(api.createCircuit(input)(40).portMach).not.toBe(before.portMach)
+  })
 })
 
 it('accepts a duct path without ignored lumped placeholders and approaches the lumped limit', () => {

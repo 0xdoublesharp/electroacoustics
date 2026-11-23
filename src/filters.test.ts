@@ -92,6 +92,10 @@ describe('LR24 filters', () => {
       20 * Math.log10(1 / 17),
       12,
     )
+    expect(lr24AttenuationDb(50, 100, 'lowpass')).toBeCloseTo(
+      20 * Math.log10(16 / 17),
+      12,
+    )
   })
 
   it('composes HPF, LPF, gain, and delay as complex voltage transfer', () => {

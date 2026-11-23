@@ -13,4 +13,18 @@ npm run check
 
 The check typechecks the source, runs the solver tests, and installs the actual npm archive in a clean consumer to verify its contents, ESM entry point, and TypeScript declarations. Add a synthetic regression when changing solver behavior. Document changed units, phase conventions, defaults, or error behavior in the pull request.
 
+## Run the invariant tests
+
+The regular test suite runs 100 generated cases per invariant with a fixed seed. Run just the invariant tests with `npm run test:fuzz`. Set `FUZZ_RUNS` and `FUZZ_SEED` for a longer campaign with a different seed.
+
+```sh
+FUZZ_RUNS=1000 FUZZ_SEED=12345 npm run test:fuzz
+```
+
+On failure, fast-check reports a reduced counterexample and its seed and path. Replay it by setting `FUZZ_SEED` and `FUZZ_PATH` from the report and selecting the failed test by name with `npm run test:fuzz -- -t 'test name'`.
+
+## Check the mathematical proofs
+
+The local Lean 4 project checks operating limits, circuit equations, and duct tuning invariants. See the [proof commands and assumptions](verification/lean/README.md).
+
 Contributions are distributed under the [MIT license](LICENSE). See the [release policy](PUBLISHING.md) for package and versioning rules.

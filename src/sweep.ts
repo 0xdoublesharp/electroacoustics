@@ -14,7 +14,8 @@ export interface SweepOptions extends SamplingOptions {
 
 /** Lossless reference resonance used to seed numerical sampling, not a measured peak. */
 export function referenceResonanceHz(input: CircuitInput): number {
-  createCircuit(input) // Public helper follows the circuit validation contract.
+  // Also ensures a lumped port has a positive area and effective length.
+  createCircuit(input)
   if (input.port?.ductPath)
     return ductPathTuning(
       input.port.ductPath,
@@ -24,8 +25,7 @@ export function referenceResonanceHz(input: CircuitInput): number {
   return input.port
     ? (input.medium.soundSpeedMps / (2 * Math.PI)) *
         Math.sqrt(
-          (input.port.areaM2 ?? 0) /
-            (input.volumeM3 * (input.port.effectiveLengthM ?? 0)),
+          input.port.areaM2! / (input.volumeM3 * input.port.effectiveLengthM!),
         )
     : input.driver.fsHz *
         Math.sqrt(

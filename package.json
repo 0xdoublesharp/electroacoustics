@@ -42,10 +42,14 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:fuzz": "vitest run src/invariants.test.ts",
     "check:pack": "node scripts/check-package.mjs",
     "check": "npm run typecheck && npm test && npm run build && npm run check:pack"
   },
   "devDependencies": {
+    "@vitest/coverage-v8": "5.0.3",
+    "fast-check": "4.10.2",
     "typescript": "6.0.2",
     "vitest": "5.0.3"
   }

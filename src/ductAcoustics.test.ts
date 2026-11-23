@@ -277,3 +277,92 @@ it('rejects unsupported finite magnitudes without allocating unbounded samples o
   expect(() => ductPathImpedance(path(), 30, 1e-300, 1.2)).toThrow(RangeError)
   expect(() => ductPathTuning(path(), 1e-300, 343)).toThrow(RangeError)
 })
+
+it('uses the finite pressure and flow limit at an exact exponential cutoff', () => {
+  const duct = path('exponential', 0.02)
+  const length = duct.sections[0]!.lengthMeters
+  const frequency = (Math.LN2 / length) / (2 * Math.PI)
+  const omega = 2 * Math.PI * frequency
+  const result = ductPathImpedance(duct, frequency, 1, 1)
+  // At cutoff the reduced Webster solution is linear in axial distance.
+  const mouthFlowRatio = 2 / (1 + Math.LN2)
+  expect(result.mouthFlowRatio.re).toBeCloseTo(mouthFlowRatio, 12)
+  expect(result.impedance.im).toBeCloseTo(
+    ((omega * length) / 0.01) * mouthFlowRatio,
+    12,
+  )
+})
+
+it('rejects an excessive end correction and an overflowing cascade', () => {
+  expect(() =>
+    ductPathEquivalentLength({ ...path(), outletCorrectionMeters: 1001 }),
+  ).toThrow(/end correction exceeds supported/)
+
+  // Alternating quarter-wave sections multiply their area ratios into the
+  // transfer matrix even though every individual section is in range.
+  const sections = Array.from({ length: 64 }, (_, index) => {
+    const area = index % 2 === 0 ? 1e-10 : 1e4
+    return {
+      profile: 'straight' as const,
+      lengthMeters: 1,
+      inletAreaSquareMeters: area,
+      outletAreaSquareMeters: area,
+    }
+  })
+  expect(() =>
+    ductPathImpedance({ ...path(), sections }, 1, 4, 1),
+  ).toThrow(/geometry exceeds finite numerical support/)
+})
+
+it('bounds tuning searches and velocity sampling by their numerical limits', () => {
+  const straight = path().sections[0]!
+  const short = { ...path(), sections: [{ ...straight, lengthMeters: 1e-6 }] }
+  expect(() => ductPathTuning(short, 1e-12, 1e6)).toThrow(/1 MHz search range/)
+
+  const slowPhase = {
+    ...path(),
+    inertanceFactor: 0.001,
+    complianceFactor: 0.001,
+    sections: [{ ...straight, lengthMeters: 100 }],
+  }
+  expect(() => ductPathTuning(slowPhase, 1e-12, 1e6)).toThrow(/4096 bounded/)
+
+  const long = { ...path(), sections: [{ ...straight, lengthMeters: 100 }] }
+  expect(() => ductPathPeakVelocityRatio(long, 1000, 343, 1)).toThrow(
+    /requires too many samples/,
+  )
+  const many = { ...path(), sections: Array.from({ length: 32 }, () => straight) }
+  expect(() => ductPathPeakVelocityRatio(many, 10000, 343, 1)).toThrow(
+    /requires too many samples/,
+  )
+})
+
+it('uses the effective section wave speed to bracket tuning', () => {
+  const duct = {
+    ...path(),
+    inertanceFactor: 0.001,
+    complianceFactor: 0.001,
+    sections: [{ ...path().sections[0]!, lengthMeters: 1 }],
+  }
+  const speed = 343
+  const volume = 1e-8
+  const tuning = ductPathTuning(duct, volume, speed)
+  const quarterWave = speed / (4 * Math.sqrt(0.001 * 0.001))
+  expect(tuning).toBeGreaterThan(quarterWave * 0.95)
+  expect(tuning).toBeLessThan(quarterWave)
+  const reactance = ductPathImpedance(duct, tuning, speed, 1).impedance.im
+  expect((2 * Math.PI * tuning * volume * reactance) / speed ** 2).toBeCloseTo(1, 10)
+})
+
+it('checks the last fractional tuning step up to 1 MHz', () => {
+  const section = { ...path().sections[0]!, lengthMeters: 0.001 }
+  const duct = { ...path(), sections: [section] }
+  const speed = 10000
+  const expected = 999900
+  // For an open cylinder, omega*V*tan(omega*L/c)/(c*A) = 1 at tuning.
+  const omega = 2 * Math.PI * expected
+  const volume =
+    (speed * section.inletAreaSquareMeters) /
+    (omega * Math.tan((omega * section.lengthMeters) / speed))
+  expect(ductPathTuning(duct, volume, speed)).toBeCloseTo(expected, 6)
+})

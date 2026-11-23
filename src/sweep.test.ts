@@ -66,4 +66,22 @@ describe('circuit sweeps', () => {
     )
     expect(filtered.impedanceOhms).toEqual(raw.impedanceOhms)
   })
+
+  it('evaluates the exact high-pass cutoff as a sweep landmark', () => {
+    const raw = api.createCircuit(circuitFixture)(37)
+    const { points, referenceResonanceHz } = api.sweepCircuit(circuitFixture, {
+      minHz: 20,
+      maxHz: 80,
+      initialPoints: 2,
+      maxPoints: 5,
+      filter: { highpassHz: 37 },
+    })
+    expect(points.map((p) => p.frequency)).toEqual([
+      20, 25, referenceResonanceHz, 37, 80,
+    ])
+    expect(points[3]!.coneExcursionPeakM).toBeCloseTo(
+      0.5 * raw.coneExcursionPeakM,
+      12,
+    )
+  })
 })
