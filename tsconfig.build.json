@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "noEmit": false,
+    "noEmitOnError": true
+  },
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/testFixtures.ts"
+  ]
+}

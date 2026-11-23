@@ -1,0 +1,52 @@
+{
+  "name": "@0xdoublesharp/electroacoustics",
+  "version": "0.1.0",
+  "description": "Dependency-free electroacoustic solvers for loudspeaker circuits, ducts, and filters.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.d.ts"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "MIT",
+  "author": "Justin Silver",
+  "keywords": [
+    "acoustics",
+    "electroacoustics",
+    "loudspeaker",
+    "thiele-small",
+    "dsp",
+    "simulation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0xdoublesharp/electroacoustics.git"
+  },
+  "homepage": "https://github.com/0xdoublesharp/electroacoustics#readme",
+  "bugs": {
+    "url": "https://github.com/0xdoublesharp/electroacoustics/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "check:pack": "node scripts/check-package.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:pack"
+  },
+  "devDependencies": {
+    "typescript": "6.0.2",
+    "vitest": "5.0.3"
+  }
+}
