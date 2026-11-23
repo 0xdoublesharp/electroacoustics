@@ -2,6 +2,15 @@
   <img src="https://raw.githubusercontent.com/0xdoublesharp/electroacoustics/main/assets/logo.png" width="160" alt="Electroacoustics logo showing a mint sine wave across a loudspeaker cone">
 </p>
 <h1 align="center">Electroacoustics</h1>
+<p align="center">
+  <a href="https://github.com/0xdoublesharp/electroacoustics/actions/workflows/ci.yml"><img src="https://github.com/0xdoublesharp/electroacoustics/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://app.codecov.io/gh/0xdoublesharp/electroacoustics"><img src="https://codecov.io/gh/0xdoublesharp/electroacoustics/branch/main/graph/badge.svg" alt="Codecov coverage"></a>
+  <a href="vitest.config.ts"><img src="https://img.shields.io/badge/coverage%20gate-100%25-brightgreen" alt="100% required coverage"></a>
+  <a href="https://www.npmjs.com/package/@0xdoublesharp/electroacoustics"><img src="https://img.shields.io/npm/v/%400xdoublesharp%2Felectroacoustics" alt="npm package version"></a>
+  <a href="package.json"><img src="https://img.shields.io/node/v/%400xdoublesharp%2Felectroacoustics" alt="Supported Node.js versions"></a>
+  <a href="verification/lean/README.md"><img src="https://img.shields.io/badge/Lean%204-proofs-218e9e" alt="Lean 4 proofs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/%400xdoublesharp%2Felectroacoustics" alt="MIT license"></a>
+</p>
 
 Dependency-free TypeScript solvers for low-frequency loudspeaker design and measurement. Size a sealed, vented, or passive-radiator enclosure, predict its frequency response, and see where cone travel, port speed, or the amplifier limits its output. Compare the prediction with measured impedance and fit driver or enclosure parameters.
 

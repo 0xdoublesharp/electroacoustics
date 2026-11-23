@@ -23,7 +23,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: ['src/**/*.test.ts', 'src/testFixtures.ts'],
-      reporter: ['text', 'text-summary'],
+      reporter: ['text', 'text-summary', 'lcovonly'],
       thresholds: {
         branches: 100,
         functions: 100,
