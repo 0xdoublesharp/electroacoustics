@@ -1,3 +1,4 @@
+import { pressureSplDb } from './pressure.js'
 import {
   createCircuit,
   type CircuitInput,
@@ -57,7 +58,7 @@ function filteredPoint(
       radiatorVolumeVelocityM3s: mul(point.radiatorVolumeVelocityM3s, transfer),
       radiatorExcursionPeakM: point.radiatorExcursionPeakM! * gain,
     }),
-    splDb: 20 * Math.log10(Math.max(magnitude(pressure), 1e-12) / 20e-6),
+    splDb: pressureSplDb(pressure),
     coneExcursionPeakM: point.coneExcursionPeakM * gain,
     portVelocityPeakMps: point.portVelocityPeakMps * gain,
     portMach: point.portMach * gain,

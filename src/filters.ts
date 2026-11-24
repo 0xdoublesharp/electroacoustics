@@ -1,4 +1,7 @@
-import { div, mul, type Complex } from './complex.js'
+import { centeredBiquad } from './biquadArithmetic.js'
+import { mul, type Complex } from './complex.js'
+import { dyadicIntervals, verifiedRepresentative } from './dyadicInterval.js'
+import { enclosedOr } from './interval.js'
 
 export type FilterTransfer = Complex
 
@@ -90,21 +93,33 @@ export function designBiquad(stage: Readonly<ParametricEq>, sampleRateHz: number
   return result
 }
 
-/** Evaluate (b0 + b1 z⁻¹ + b2 z⁻²) / (1 + a1 z⁻¹ + a2 z⁻²). */
+/** Evaluate the normalized unit-circle transfer with a verified per-component error.
+ * Each error is at most 2^-40 × max(1, |exact component|).
+ */
 export function biquadTransfer(frequencyHz: number, sampleRateHz: number, coefficients: Readonly<BiquadCoefficients>): Complex {
   validateFrequency(sampleRateHz, 'Sample rate')
-  if (!Number.isFinite(frequencyHz) || frequencyHz < 0 || frequencyHz > sampleRateHz / 2)
+  if (!Number.isFinite(frequencyHz) || frequencyHz < 0 || 2 * frequencyHz > sampleRateHz)
     throw new RangeError('Biquad frequency must be between DC and Nyquist')
   validateBiquad(coefficients)
-  const { b0, b1, b2, a1, a2 } = coefficients
-  const w = 2 * Math.PI * (frequencyHz / sampleRateHz)
-  // Multiply both polynomials by z to avoid two evaluations of z⁻².
-  const cos = Math.cos(w)
-  const sin = Math.sin(w)
-  const result = div({ re: b1 + (b0 + b2) * cos, im: (b0 - b2) * sin },
-    { re: a1 + (1 + a2) * cos, im: (1 - a2) * sin })
-  if (!Number.isFinite(result.re) || !Number.isFinite(result.im))
-    throw new RangeError('Biquad response exceeds the supported numeric range')
+  const result = enclosedOr(() => {
+    const math = dyadicIntervals
+    const { exact, minus, pi, plus, quotient, square, times, zero } = math
+    const two = exact(2)
+    let versine = zero
+    let sine = zero
+    if (2 * frequencyHz === sampleRateHz) versine = two
+    else if (frequencyHz > 0) {
+      const [sinHalf, cosHalf] = math.firstQuadrant(times(pi, quotient(exact(frequencyHz), exact(sampleRateHz))))
+      versine = times(two, square(sinHalf))
+      sine = times(two, times(sinHalf, cosHalf))
+    }
+    const { numReal, numImag, denReal, denImag } = centeredBiquad(coefficients, versine, sine, math)
+    const norm = plus(square(denReal), square(denImag))
+    const re = quotient(plus(times(numReal, denReal), times(numImag, denImag)), norm)
+    const im = quotient(minus(times(numImag, denReal), times(numReal, denImag)), norm)
+    return { re: verifiedRepresentative(re), im: verifiedRepresentative(im) }
+  }, null)
+  if (result === null) throw new RangeError('Biquad response exceeds the supported numeric range')
   return result
 }
 

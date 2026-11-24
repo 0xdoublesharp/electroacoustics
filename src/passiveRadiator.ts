@@ -29,7 +29,10 @@ function checkedStiffness(radiator: PassiveRadiator, volumeM3: number, medium: M
 
 /** Free suspension resonance of each passive radiator. */
 export function passiveRadiatorResonanceHz(radiator: PassiveRadiator): number {
-  return Math.sqrt(radiatorParameters(radiator).stiffness / radiator.movingMassKg) / (2 * Math.PI)
+  radiatorParameters(radiator)
+  const frequency = 1 / (2 * Math.PI) / Math.sqrt(radiator.movingMassKg) / Math.sqrt(radiator.complianceMPerN)
+  if (!Number.isFinite(frequency)) throw new RangeError('Radiator resonance exceeds numeric support')
+  return frequency
 }
 
 /** Lossless tuning of the cavity and identical passive radiators with the active cones fixed. */

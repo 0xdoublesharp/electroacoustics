@@ -48,8 +48,37 @@ it('solves distributed physical length with changing cavity volume', () => {
   const solution = api.solveDuctLengthForTuning(setup)
   expect(solution.status).toBe('root')
   expect(solution.lengthM).toBeCloseTo(0.4, 8)
-  expect(api.solveDuctLengthForTuning({ ...setup, minLengthM: 0.5 }).status).toBe('shortest-tunes-low')
-  expect(api.solveDuctLengthForTuning({ ...setup, maxLengthM: 0.2 }).status).toBe('longest-tunes-high')
+  expect(solution.iterations).toBe(30)
+  const { minLengthM, maxLengthM } = solution.bracket
+  expect(maxLengthM - minLengthM).toBeLessThanOrEqual(1e-9)
+  expect(api.ductPathTuning(pathForLength(minLengthM), volumeForLength(minLengthM), 343)).toBeGreaterThanOrEqual(targetHz)
+  expect(api.ductPathTuning(pathForLength(maxLengthM), volumeForLength(maxLengthM), 343)).toBeLessThanOrEqual(targetHz)
+  expect(api.solveDuctLengthForTuning({ ...setup, minLengthM: 0.5 })).toMatchObject({
+    status: 'shortest-tunes-low', lengthM: 0.5, bracket: { minLengthM: 0.5, maxLengthM: 0.9 }, iterations: 0,
+  })
+  expect(api.solveDuctLengthForTuning({ ...setup, maxLengthM: 0.2 })).toMatchObject({
+    status: 'longest-tunes-high', lengthM: 0.2, bracket: { minLengthM: 0.1, maxLengthM: 0.2 }, iterations: 0,
+  })
   expect(api.solveDuctLengthForTuning({ ...setup, toleranceM: 0.01 }).lengthM).toBeCloseTo(0.4, 2)
   expect(() => api.solveDuctLengthForTuning({ ...setup, minLengthM: 1 })).toThrow(/bracket/)
+  const oneStep = { ...setup, minLengthM: 0.25, maxLengthM: 0.75, maxIterations: 1 }
+  expect(api.solveDuctLengthForTuning(oneStep)).toMatchObject({
+    status: 'budget-exhausted', lengthM: 0.375, bracket: { minLengthM: 0.25, maxLengthM: 0.5 }, iterations: 1,
+  })
+  expect(api.solveDuctLengthForTuning({ ...oneStep, toleranceM: 0.25 })).toMatchObject({ status: 'root', iterations: 1 })
+  for (const maxIterations of [0, -1, 201, 1.5, NaN, Infinity, 2 ** 53])
+    expect(() => api.solveDuctLengthForTuning({ ...setup, maxIterations })).toThrow(/iterations/i)
+
+  // Adjacent endpoints straddle a midpoint tie that rounds to either endpoint.
+  for (const low of [0.5, 0.5 + Number.EPSILON / 2]) {
+    const high = low + Number.EPSILON / 2
+    const box = {
+      ...setup, minLengthM: low, maxLengthM: high, maxIterations: 200,
+      targetHz: api.ductPathTuning(pathForLength(low), volumeForLength(low), 343),
+    }
+    expect(api.solveDuctLengthForTuning({ ...box, toleranceM: Number.MIN_VALUE })).toMatchObject({
+      status: 'resolution-limit', bracket: { minLengthM: low, maxLengthM: high }, iterations: 0,
+    })
+    expect(api.solveDuctLengthForTuning({ ...box, toleranceM: high - low })).toMatchObject({ status: 'root', iterations: 0 })
+  }
 })

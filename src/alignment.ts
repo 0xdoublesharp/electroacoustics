@@ -72,24 +72,40 @@ export interface DuctLengthTuningInput {
   pathForLength: (lengthM: number) => DuctPath
   volumeForLength: (lengthM: number) => number
   toleranceM?: number
+  /** Maximum bisection steps, from 1 through 200. Defaults to 80. */
+  maxIterations?: number
 }
 
-/** Bisect one realizable interval on which fundamental tuning decreases with length. */
+/** Bisect one realizable interval on which fundamental tuning decreases with length.
+ * A 'root' has a bracket no wider than toleranceM. Endpoint results retain the
+ * input bracket. Iterations counts completed bisection steps.
+ */
 export function solveDuctLengthForTuning(input: DuctLengthTuningInput) {
-  const { targetHz, soundSpeedMps, pathForLength, volumeForLength, toleranceM = 1e-9 } = input
+  const { targetHz, soundSpeedMps, pathForLength, volumeForLength, toleranceM = 1e-9, maxIterations = 80 } = input
   let { minLengthM: low, maxLengthM: high } = input
   requirePositive(targetHz, soundSpeedMps, low, high, toleranceM)
   if (high < low) throw new RangeError('Invalid duct length bracket')
+  if (!Number.isSafeInteger(maxIterations) || maxIterations < 1 || maxIterations > 200)
+    throw new RangeError('Duct length iterations must be a safe integer from 1 through 200')
   const tuning = (lengthM: number) => ductPathTuning(pathForLength(lengthM), volumeForLength(lengthM), soundSpeedMps)
+  let iterations = 0
+  const bracket = () => ({ minLengthM: low, maxLengthM: high })
   const shortestTuning = tuning(low)
-  if (shortestTuning < targetHz) return { lengthM: low, tuningHz: shortestTuning, status: 'shortest-tunes-low' as const }
+  if (shortestTuning < targetHz)
+    return { lengthM: low, tuningHz: shortestTuning, status: 'shortest-tunes-low' as const, bracket: bracket(), iterations }
   const longestTuning = tuning(high)
-  if (longestTuning > targetHz) return { lengthM: high, tuningHz: longestTuning, status: 'longest-tunes-high' as const }
-  for (let i = 0; i < 80 && high - low > toleranceM; i++) {
+  if (longestTuning > targetHz)
+    return { lengthM: high, tuningHz: longestTuning, status: 'longest-tunes-high' as const, bracket: bracket(), iterations }
+  while (iterations < maxIterations && high - low > toleranceM) {
     const mid = low + (high - low) / 2
+    if (mid === low || mid === high)
+      return { lengthM: mid, tuningHz: tuning(mid),
+        status: 'resolution-limit' as const, bracket: bracket(), iterations }
     if (tuning(mid) > targetHz) low = mid
     else high = mid
+    iterations++
   }
   const lengthM = low + (high - low) / 2
-  return { lengthM, tuningHz: tuning(lengthM), status: 'root' as const }
+  const status = high - low <= toleranceM ? 'root' as const : 'budget-exhausted' as const
+  return { lengthM, tuningHz: tuning(lengthM), status, bracket: bracket(), iterations }
 }

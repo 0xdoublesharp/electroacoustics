@@ -1,3 +1,4 @@
+import { pressureSplDb } from './pressure.js'
 import {
   add,
   c,
@@ -194,6 +195,8 @@ export function createCircuit(
     if (!positive(frequency))
       throw new RangeError('Frequency must be finite and positive')
     const omega = 2 * Math.PI * frequency
+    if (!Number.isFinite(omega))
+      throw new RangeError('Circuit evaluation exceeds finite numerical support')
     const duct = path
       ? ductPathImpedance(path, frequency, speed, rho, portResistance)
       : undefined
@@ -265,7 +268,7 @@ export function createCircuit(
       mouthVolumeVelocityM3s: mouthFlow,
       ...(radiator ? { radiatorVolumeVelocityM3s: radiatorFlow, radiatorExcursionPeakM: radiatorTravel } : {}),
       pressurePa: pressure,
-      splDb: 20 * Math.log10(Math.max(magnitude(pressure), 1e-12) / 20e-6),
+      splDb: pressureSplDb(pressure),
       coneExcursionPeakM: (Math.SQRT2 * magnitude(velocity)) / omega,
       portVelocityPeakMps: portVelocity,
       portMach: portVelocity / speed,

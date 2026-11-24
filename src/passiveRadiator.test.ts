@@ -39,3 +39,40 @@ it('rejects conflicting topology and nonphysical or unrepresentable radiator inp
   expect(() => api.passiveRadiatorMassForTuning(radiator, volumeM3, medium, 0)).toThrow(/target/)
   expect(() => api.passiveRadiatorMassForTuning(radiator, volumeM3, medium, Number.MAX_VALUE)).toThrow(/mass/)
 })
+it('returns a finite free resonance when only the intermediate mass ratio would overflow', () => {
+  const inputs = { ...radiator, movingMassKg: 1e-300, complianceMPerN: 1e-100 }
+  expect(api.passiveRadiatorResonanceHz(inputs) / 1e200).toBeCloseTo(1 / (2 * Math.PI), 13)
+  expect(() => api.passiveRadiatorResonanceHz({ ...inputs, movingMassKg: Number.MIN_VALUE,
+    complianceMPerN: Number.MIN_VALUE })).toThrow(/numeric support/)
+})
+
+it('balances copper, cone, cavity, and radiator losses for a wired cabinet', () => {
+  const input = { ...circuitFixture, quantity: 4, seriesDrivers: 2,
+    leakageQuality: 14, absorptionQuality: 22,
+    passiveRadiator: { ...radiator, mechanicalResistanceNsPerM: 1.5 } }
+  const { driver, medium, passiveRadiator: r } = input
+  const { densityKgM3: rho, soundSpeedMps: speed } = medium
+  const compliance = driver.vasM3 / (rho * speed ** 2 * driver.sdM2 ** 2)
+  const omegaFree = 2 * Math.PI * driver.fsHz
+  const coneResistance = 1 / (omegaFree * compliance * driver.qms)
+  const cavityCompliance = input.volumeM3 / (rho * speed ** 2)
+  const characteristic = Math.sqrt(r.movingMassKg / (r.quantity * r.sdM2 ** 2 * cavityCompliance))
+  const lossConductance = (1 / input.leakageQuality + 1 / input.absorptionQuality) / characteristic
+  const at = api.createCircuit(input)
+
+  for (const frequency of [12, api.passiveRadiatorResonanceHz(r), api.referenceResonanceHz(input), 100]) {
+    const point = at(frequency)
+    const omega = 2 * Math.PI * frequency
+    const coneFlow = point.coneVolumeVelocityM3s
+    const radiatorFlow = point.radiatorVolumeVelocityM3s!
+    const coneVelocity = Math.hypot(coneFlow.re, coneFlow.im) / (input.quantity * driver.sdM2)
+    const radRe = -radiatorFlow.re / (r.quantity * r.sdM2)
+    const radIm = -radiatorFlow.im / (r.quantity * r.sdM2)
+    const radReactance = omega * r.movingMassKg - 1 / (omega * r.complianceMPerN)
+    const pressure = Math.hypot(r.mechanicalResistanceNsPerM * radRe - radReactance * radIm,
+      r.mechanicalResistanceNsPerM * radIm + radReactance * radRe) / r.sdM2
+    const totalLoss = point.coilLossWatts + input.quantity * coneResistance * coneVelocity ** 2 +
+      lossConductance * pressure ** 2 + r.quantity * r.mechanicalResistanceNsPerM * (radRe ** 2 + radIm ** 2)
+    expect(point.realInputPowerWatts).toBeCloseTo(totalLoss, 11)
+  }
+})

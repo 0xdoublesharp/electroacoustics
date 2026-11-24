@@ -159,3 +159,25 @@ it('handles imported biquads in a sweep and rejects invalid DSP inputs', () => {
   expect(() => digital.biquadTransfer(53, 48000, { ...raw, a1: 2 })).toThrow(/unit circle/)
   expect(() => digital.biquadTransfer(0, 48000, { ...raw, b0: Number.MAX_VALUE, b2: Number.MAX_VALUE })).toThrow(/numeric range/)
 })
+it('preserves exact DC and Nyquist biquad nulls', () => {
+  const base = { kind: 'biquad' as const, b0: 1, b1: 1, b2: 0, a1: 0, a2: 0 }
+  expect(digital.magnitude(digital.biquadTransfer(24_000, 48_000, base))).toBe(0)
+  expect(digital.magnitude(digital.biquadTransfer(0, 48_000, { ...base, b1: -1 }))).toBe(0)
+})
+
+it('returns an accurate near-pole response or an explicit numeric-range error', () => {
+  const rate = 48000
+  const frequency = 2
+  const pole = 1 - 2 ** -16
+  const raw = { kind: 'biquad' as const, b0: 1e-5, b1: 0, b2: 0, a1: -pole, a2: 0 }
+  const angle = 2 * Math.PI * frequency / rate
+  const real = (1 - pole) + 2 * pole * Math.sin(angle / 2) ** 2
+  const imaginary = pole * Math.sin(angle)
+  const square = real ** 2 + imaginary ** 2
+  const actual = digital.biquadTransfer(frequency, rate, raw)
+  expect(actual.re).toBeCloseTo(raw.b0 * real / square, 13)
+  expect(actual.im).toBeCloseTo(-raw.b0 * imaginary / square, 13)
+
+  const illConditioned = { ...raw, b0: 1, a1: -1 + 2 ** -48 }
+  expect(() => digital.biquadTransfer(1e-11, rate, illConditioned)).toThrow(/numeric range/)
+})
