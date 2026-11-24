@@ -1,4 +1,5 @@
 export * from './alignment.js'
+export * from './bandOutputLimit.js'
 export * from './circuit.js'
 export * from './complex.js'
 export * from './ductAcoustics.js'

@@ -1,3 +1,11 @@
+import {
+  inRange, junctionLength, peakVelocityBounds, rawEquivalentLength, tuningBounds,
+  validateAcoustic, validateDuctPath, validateDuctTuning,
+  type DuctBound, type DuctBoundOptions, type DuctPeakVelocityCertificate, type DuctTuningCertificate,
+} from './ductBounds.js'
+export { verifyDuctPeakVelocityCertificate, verifyDuctTuningCertificate } from './ductBounds.js'
+export type { DuctBound, DuctBoundOptions, DuctPeakVelocityCertificate, DuctTuningCertificate } from './ductBounds.js'
+
 /** One-dimensional, rigid-wall, lossless Webster duct sections. */
 export interface DuctSection {
   lengthMeters: number
@@ -23,129 +31,15 @@ export interface DuctPath {
   complianceFactor?: number
 }
 
-function positive(value: number): boolean {
-  return Number.isFinite(value) && value > 0
-}
-// Numerical support limits, deliberately wider than cabinet-scale geometry.
-// Reject unsupported requests before allocating or searching, rather than
-// silently emitting nonfinite responses or blocking a UI update.
-function inRange(value: number, low: number, high: number) {
-  return Number.isFinite(value) && value >= low && value <= high
-}
 function finiteResult(...values: number[]) {
   if (!values.every(Number.isFinite))
     throw new RangeError('Duct geometry exceeds finite numerical support')
 }
-function validateAcoustic(
-  frequency: number,
-  soundSpeed: number,
-  density: number,
-) {
-  if (
-    !inRange(frequency, 1e-6, 1e6) ||
-    !inRange(soundSpeed, 1, 1e6) ||
-    !inRange(density, 1e-6, 1e6)
-  )
-    throw new RangeError(
-      'Duct frequency or medium exceeds supported numerical range',
-    )
-}
-function junctionLength(lengths: readonly number[]) {
-  return lengths.reduce((a, b) => a + b, 0)
-}
-function validateExtensions(path: DuctPath) {
-  const junctions = path.junctionInertanceLengthsMeters
-  if (
-    junctions !== undefined &&
-    (!Array.isArray(junctions) ||
-      junctions.length > 128 ||
-      !junctions.every((x) => inRange(x, -1000, 1000)))
-  )
-    throw new RangeError('Duct junction inertances must be finite and bounded')
-  for (const factor of [path.inertanceFactor, path.complianceFactor])
-    if (factor !== undefined && !inRange(factor, 1e-3, 1e3))
-      throw new RangeError('Duct boundary-layer factors must be positive')
-}
-function validate(path: DuctPath) {
-  validateExtensions(path)
-  if (
-    !Number.isInteger(path.count) ||
-    path.count <= 0 ||
-    path.count > 10000 ||
-    path.sections.length > 128 ||
-    !path.sections.length ||
-    !Number.isFinite(path.inletCorrectionMeters) ||
-    path.inletCorrectionMeters < 0 ||
-    !Number.isFinite(path.outletCorrectionMeters) ||
-    path.outletCorrectionMeters < 0
-  )
-    throw new RangeError(
-      'Invalid duct path or more than 128 sections / 10000 parallel ducts',
-    )
-  if (path.inletCorrectionMeters > 1000 || path.outletCorrectionMeters > 1000)
-    throw new RangeError(
-      'Duct end correction exceeds supported 1000 meter range',
-    )
-  for (const s of path.sections) {
-    if (
-      ![
-        s.lengthMeters,
-        s.inletAreaSquareMeters,
-        s.outletAreaSquareMeters,
-      ].every(positive) ||
-      !['straight', 'conical', 'exponential'].includes(s.profile) ||
-      (s.profile === 'straight' &&
-        s.inletAreaSquareMeters !== s.outletAreaSquareMeters)
-    )
-      throw new RangeError('Invalid duct section')
-    if (
-      !inRange(s.lengthMeters, 1e-9, 1000) ||
-      !inRange(s.inletAreaSquareMeters, 1e-10, 1e4) ||
-      !inRange(s.outletAreaSquareMeters, 1e-10, 1e4) ||
-      !inRange(s.outletAreaSquareMeters / s.inletAreaSquareMeters, 1e-8, 1e8)
-    )
-      throw new RangeError(
-        'Duct section exceeds supported length, area, or taper numerical range',
-      )
-  }
-  if (
-    path.junctionInertanceLengthsMeters !== undefined &&
-    !(rawEquivalentLength(path) > 0)
-  )
-    throw new RangeError(
-      'Duct junction inertances leave a non-positive total effective inertance',
-    )
-}
-
 /** Inlet-area-referenced inertance length, per duct; count does not change length. */
 export function ductPathEquivalentLength(path: DuctPath): number {
-  validate(path)
+  validateDuctPath(path)
   return rawEquivalentLength(path)
 }
-function rawEquivalentLength(path: DuctPath): number {
-  const inlet = path.sections[0]!.inletAreaSquareMeters
-  const mouth = path.sections.at(-1)!.outletAreaSquareMeters
-  const sections = path.sections.reduce((sum, s) => {
-    const ratio = s.outletAreaSquareMeters / s.inletAreaSquareMeters
-    const factor =
-      ratio === 1
-        ? 1
-        : s.profile === 'conical'
-          ? 1 / Math.sqrt(ratio)
-          : -Math.expm1(-Math.log(ratio)) / Math.log(ratio)
-    return sum + ((s.lengthMeters * inlet) / s.inletAreaSquareMeters) * factor
-  }, 0)
-  const base =
-    path.inletCorrectionMeters +
-    (path.outletCorrectionMeters * inlet) / mouth +
-    (path.inertanceFactor === undefined
-      ? sections
-      : sections * path.inertanceFactor)
-  return path.junctionInertanceLengthsMeters === undefined
-    ? base
-    : base + junctionLength(path.junctionInertanceLengthsMeters)
-}
-
 // [p_in,U_in] = [a,j*b;j*c,d] [p_out,U_out], with exp(j*omega*t).
 // Webster: p'' + (S'/S)p' + k²p=0; y=sqrt(S)*p reduces it to
 // y'' + [k²-(sqrt(S))''/sqrt(S)]y=0. The potential is zero for
@@ -254,7 +148,7 @@ export function ductPathImpedance(
   density: number,
   resistance = 0,
 ) {
-  validate(path)
+  validateDuctPath(path)
   validateAcoustic(frequency, soundSpeed, density)
   if (!Number.isFinite(resistance) || resistance < 0)
     throw new RangeError('Invalid duct acoustic parameters')
@@ -281,7 +175,7 @@ export function ductPathTuningResidual(
   frequency: number,
   soundSpeed: number,
 ): number {
-  validate(path)
+  validateDuctPath(path)
   if (
     !inRange(volumeM3, 0, 1e9) ||
     !inRange(soundSpeed, 1, 1e6) ||
@@ -301,10 +195,8 @@ export function ductPathTuning(
   volumeM3: number,
   soundSpeed: number,
 ): number {
-  validate(path)
-  if (!inRange(volumeM3, 1e-12, 1e9) || !inRange(soundSpeed, 1, 1e6))
-    throw new RangeError('Invalid cavity parameters')
-  const length = ductPathEquivalentLength(path)
+  validateDuctTuning(path, volumeM3, soundSpeed)
+  const length = rawEquivalentLength(path)
   const estimate =
     (soundSpeed / (2 * Math.PI)) *
     Math.sqrt(
@@ -439,4 +331,27 @@ export function ductPathPeakVelocityRatio(
   const result = (peak * Math.abs(transfer.mouthFlowRatio.re)) / path.count
   finiteResult(result)
   return result
+}
+
+
+/** Enclose the first positive physical tuning, or identify what prevented certification. */
+export function boundDuctPathTuning(path: DuctPath, volumeM3: number, soundSpeed: number,
+  options: DuctBoundOptions = {}): DuctBound<DuctTuningCertificate> {
+  let estimate: number
+  try {
+    estimate = ductPathTuning(path, volumeM3, soundSpeed)
+  } catch (error) {
+    if (error instanceof RangeError && error.message.startsWith('Could not bracket'))
+      return { status: 'unresolved', reason: 'bracket', splits: 0 }
+    throw error
+  }
+  return tuningBounds(path, volumeM3, soundSpeed, estimate, options)
+}
+
+/** Bound the peak velocity over every position, per unit total throat flow. */
+export function boundDuctPathPeakVelocityRatio(path: DuctPath, frequency: number,
+  soundSpeed: number, density: number, options: DuctBoundOptions = {}): DuctBound<DuctPeakVelocityCertificate> {
+  validateDuctPath(path)
+  validateAcoustic(frequency, soundSpeed, density)
+  return peakVelocityBounds(path, frequency, soundSpeed, density, options)
 }

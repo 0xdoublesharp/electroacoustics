@@ -1,11 +1,22 @@
+import { odeFixture } from './testFixtures.js'
 import { describe, expect, it } from 'vitest'
 import {
+  boundDuctPathPeakVelocityRatio,
+  boundDuctPathTuning,
   ductPathEquivalentLength,
   ductPathImpedance,
   ductPathPeakVelocityRatio,
   ductPathTuning,
+  verifyDuctPeakVelocityCertificate,
+  verifyDuctTuningCertificate,
+  type DuctBound,
+  type DuctBoundOptions,
   type DuctPath,
 } from './ductAcoustics'
+import { ductLogRatio } from './ductBounds.js'
+import { dyadicIntervals } from './dyadicInterval.js'
+import { enclosedOr } from './interval.js'
+
 const path = (
   profile: 'straight' | 'conical' | 'exponential' = 'straight',
   outlet = 0.005,
@@ -124,48 +135,6 @@ describe('distributed duct acoustics', () => {
   })
 })
 
-// Independent integration of pressure/volume-flow conservation, without
-// transfer matrices or the transformed Webster equation used by production.
-function odeFixture(p: DuctPath, frequency: number) {
-  const s = p.sections[0]!
-  const omega = 2 * Math.PI * frequency
-  const areaAt = (x: number) =>
-    s.profile === 'exponential'
-      ? s.inletAreaSquareMeters *
-        (s.outletAreaSquareMeters / s.inletAreaSquareMeters) **
-          (x / s.lengthMeters)
-      : (Math.sqrt(s.inletAreaSquareMeters) +
-          ((Math.sqrt(s.outletAreaSquareMeters) -
-            Math.sqrt(s.inletAreaSquareMeters)) *
-            x) /
-            s.lengthMeters) **
-        2
-  const derivative = (x: number, pressure: number, flow: number) => [
-    (-omega * 1.2 * flow) / areaAt(x),
-    (omega * areaAt(x) * pressure) / (1.2 * 343 ** 2),
-  ]
-  const h = -s.lengthMeters / 4000
-  let pressure = 0,
-    flow = 1
-  for (let i = 0; i < 4000; i++) {
-    const x = s.lengthMeters + i * h
-    const a = derivative(x, pressure, flow)
-    const b = derivative(
-      x + h / 2,
-      pressure + (h * a[0]!) / 2,
-      flow + (h * a[1]!) / 2,
-    )
-    const c = derivative(
-      x + h / 2,
-      pressure + (h * b[0]!) / 2,
-      flow + (h * b[1]!) / 2,
-    )
-    const d = derivative(x + h, pressure + h * c[0]!, flow + h * c[1]!)
-    pressure += (h / 6) * (a[0]! + 2 * b[0]! + 2 * c[0]! + d[0]!)
-    flow += (h / 6) * (a[1]! + 2 * b[1]! + 2 * c[1]! + d[1]!)
-  }
-  return { reactance: pressure / flow, ratio: 1 / flow }
-}
 it('agrees with independent pressure/flow ODE fixtures above and below taper cutoff', () => {
   for (const profile of ['conical', 'exponential'] as const) {
     for (const outlet of [0.001, 0.02]) {
@@ -180,25 +149,24 @@ it('agrees with independent pressure/flow ODE fixtures above and below taper cut
   }
 })
 
+it.each(['conical', 'exponential'] as const)('encloses the first physical tuning of a %s duct', (profile) => {
+  const p = path(profile, 0.02)
+  const volume = 0.07
+  const result = boundDuctPathTuning(p, volume, 343)
+  expect(result.status).toBe('resolved')
+  if (result.status !== 'resolved') throw new Error(result.reason)
+  expect(result).toMatchObject({ certificate: { version: 1, lower: result.lower, upper: result.upper } })
+  expect(verifyDuctTuningCertificate(p, volume, 343, jsonRoundTrip(result.certificate))).toBe(true)
+  const residual = (frequency: number) =>
+    2 * Math.PI * frequency * volume * odeFixture(p, frequency).reactance / (1.2 * 343 ** 2) - 1
+  expect(residual(result.lower)).toBeLessThan(0)
+  expect(residual(result.upper)).toBeGreaterThan(0)
+  expect((result.upper - result.lower) / result.lower).toBeLessThanOrEqual(1e-5)
+})
+
 describe('internal duct velocity maxima', () => {
   it('finds an interior antinode hidden by large mouth and throat endpoints', () => {
-    const p: DuctPath = {
-      ...path(),
-      sections: [
-        {
-          lengthMeters: 0.6,
-          inletAreaSquareMeters: 0.005,
-          outletAreaSquareMeters: 0.005,
-          profile: 'straight',
-        },
-        {
-          lengthMeters: 0.3,
-          inletAreaSquareMeters: 0.005,
-          outletAreaSquareMeters: 0.04,
-          profile: 'conical',
-        },
-      ],
-    }
+    const p = antinodePath()
     const f = 343 / (2 * 0.6)
     const endpoint = Math.max(
       1 / 0.005,
@@ -207,6 +175,21 @@ describe('internal duct velocity maxima', () => {
     expect(ductPathPeakVelocityRatio(p, f, 343, 1.2)).toBeGreaterThan(
       endpoint * 1.05,
     )
+    const bounded = boundDuctPathPeakVelocityRatio(p, f, 343, 1.2)
+    expect(bounded.status).toBe('resolved')
+    if (bounded.status !== 'resolved') throw new Error(bounded.reason)
+    expect(bounded).toMatchObject({ certificate: { version: 1, lower: bounded.lower, upper: bounded.upper } })
+    expect(verifyDuctPeakVelocityCertificate(p, f, 343, 1.2, jsonRoundTrip(bounded.certificate))).toBe(true)
+    expect(bounded.lower).toBeGreaterThan(endpoint * 1.05)
+    // The upstream uniform section spans half a wave, so its exact maximum
+    // follows from the pressure and flow at the junction. Integrate the taper
+    // independently, then use that junction state for the uniform section.
+    const taper = odeFixture({ ...p, sections: [p.sections[1]!] }, f)
+    const characteristic = 1.2 * 343 / 0.005
+    const upstreamPeak = Math.hypot(1, taper.reactance / characteristic) / 0.005
+    const reference = Math.max(upstreamPeak, taper.peak)
+    expect(bounded.lower).toBeLessThanOrEqual(reference + 1e-8)
+    expect(bounded.upper).toBeGreaterThanOrEqual(reference - 1e-8)
   })
   it('converges under section subdivision and counts parallel ducts', () => {
     const p = path('exponential', 0.02)
@@ -318,6 +301,8 @@ it('bounds tuning searches and velocity sampling by their numerical limits', () 
   const straight = path().sections[0]!
   const short = { ...path(), sections: [{ ...straight, lengthMeters: 1e-6 }] }
   expect(() => ductPathTuning(short, 1e-12, 1e6)).toThrow(/1 MHz search range/)
+  expect(boundDuctPathTuning(short, 1e-12, 1e6)).toMatchObject({ status: 'unresolved', reason: 'bracket' })
+  expect(() => boundDuctPathTuning(short, -1, 343)).toThrow(/cavity parameters/)
 
   const slowPhase = {
     ...path(),
@@ -365,4 +350,263 @@ it('checks the last fractional tuning step up to 1 MHz', () => {
     (speed * section.inletAreaSquareMeters) /
     (omega * Math.tan((omega * section.lengthMeters) / speed))
   expect(ductPathTuning(duct, volume, speed)).toBeCloseTo(expected, 6)
+})
+
+it('reports unsupported spatial ranges, poles, exhausted budgets, and invalid bounds', () => {
+  const straight = path()
+  const conical = path('conical', 0.02)
+  expect(() => boundDuctPathTuning(straight, 0.06, 343, { maxSplits: -1 })).toThrow(/budget/)
+  expect(() => boundDuctPathPeakVelocityRatio(straight, 20, 343, 1.2, { relativeTolerance: 0.1 })).toThrow(/tolerance/)
+  expect(boundDuctPathTuning(straight, 0.06, 343, { relativeTolerance: 1e-20 }))
+    .toMatchObject({ status: 'unresolved', reason: 'bracket' })
+  expect(boundDuctPathTuning(straight, 1e-12, 343))
+    .toMatchObject({ status: 'unresolved', reason: 'pole' })
+  expect(boundDuctPathTuning(conical, 0.06, 343, { maxSplits: 0 }))
+    .toMatchObject({ status: 'unresolved', reason: 'subdivision-budget' })
+  expect(boundDuctPathPeakVelocityRatio(conical, 150, 343, 1.2, { maxSplits: 0 }))
+    .toMatchObject({ status: 'unresolved', reason: 'subdivision-budget' })
+  const halfMeter = { ...straight, sections: [{ ...straight.sections[0]!, lengthMeters: 0.5 }] }
+  expect(boundDuctPathPeakVelocityRatio(halfMeter, 171.5, 343, 1.2))
+    .toMatchObject({ status: 'unresolved', reason: 'pole' })
+  expect(boundDuctPathPeakVelocityRatio(straight, 1e6, 343, 1.2))
+    .toMatchObject({ status: 'unresolved', reason: 'numeric-range' })
+  const almostConstant = { ...straight, sections: [{ ...straight.sections[0]!, lengthMeters: 1e-9 }] }
+  expect(boundDuctPathPeakVelocityRatio(almostConstant, 1e-6, 343, 1.2,
+    { relativeTolerance: 1e-18, maxSplits: 0 })).toMatchObject({ status: 'unresolved', reason: 'subdivision-budget' })
+  const withCorrections = { ...conical, junctionInertanceLengthsMeters: [0.01, -0.001] }
+  expect(boundDuctPathTuning(withCorrections, 0.06, 343).status).toBe('resolved')
+  expect(enclosedOr(() => ductLogRatio({ lo: dyadicIntervals.one.lo, hi: dyadicIntervals.exact(5).hi }), null))
+    .toBeNull()
+})
+
+function antinodePath(): DuctPath {
+  return {
+    ...path(),
+    sections: [
+      { ...path().sections[0]!, lengthMeters: 0.6 },
+      { ...path('conical', 0.04).sections[0]!, lengthMeters: 0.3 },
+    ],
+  }
+}
+
+function jsonRoundTrip<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value))
+}
+
+function certificateOf<C>(result: DuctBound<C>): C {
+  if (result.status !== 'resolved') throw new Error(result.reason)
+  return result.certificate
+}
+
+function requestWith(request: string, argument: number, value: unknown): string {
+  const parameters: unknown[] = JSON.parse(request)
+  parameters[argument] = value
+  return JSON.stringify(parameters)
+}
+
+describe('duct certificates', () => {
+  const speed = 343
+  const volume = 0.06
+  const density = 1.2
+  const frequency = speed / 1.2
+  const corrected: DuctPath = {
+    ...antinodePath(),
+    count: 2,
+    inletCorrectionMeters: 0.015,
+    outletCorrectionMeters: 0.025,
+    junctionInertanceLengthsMeters: [-0.001, 0.005],
+    inertanceFactor: 1.02,
+    complianceFactor: 1.01,
+  }
+
+  it.each([path(), antinodePath(), corrected])('replays a tuning bound after JSON serialization %#', (p) => {
+    const options = { relativeTolerance: 0.0001, maxSplits: 128 }
+    const certificate = jsonRoundTrip(certificateOf(boundDuctPathTuning(p, volume, speed, options)))
+    // Construct the same geometry with a different field order.
+    const { sections, ...geometry } = p
+    const reordered = { sections: sections.map(({ profile, ...section }) => ({ profile, ...section })), ...geometry }
+    expect(verifyDuctTuningCertificate(reordered, volume, speed, certificate,
+      { maxSplits: 128, relativeTolerance: 0.0001 })).toBe(true)
+  })
+
+  it.each([path(), path('conical', 0.02), path('exponential', 0.02)])(
+    'replays the velocity envelope of a single section %#', (p) => {
+      const hz = 150
+      const result = boundDuctPathPeakVelocityRatio(p, hz, speed, density)
+      const certificate = jsonRoundTrip(certificateOf(result))
+      expect(verifyDuctPeakVelocityCertificate(p, hz, speed, density, certificate,
+        { maxSplits: 4096, relativeTolerance: 0.001 })).toBe(true)
+      expect(certificate.witness.sectionIndex).toBe(0)
+    },
+  )
+
+  it('replays a corrected interior antinode using throat-to-mouth section order', () => {
+    const certificate = jsonRoundTrip(certificateOf(boundDuctPathPeakVelocityRatio(corrected, frequency, speed, density)))
+    expect(certificate.witness.sectionIndex).toBe(0)
+    expect(certificate.witness.fraction).toBeGreaterThan(0)
+    expect(certificate.witness.fraction).toBeLessThan(1)
+    expect(verifyDuctPeakVelocityCertificate(corrected, frequency, speed, density, certificate)).toBe(true)
+    expect(verifyDuctPeakVelocityCertificate(corrected, frequency, speed, density,
+      { ...certificate, witness: { ...certificate.witness, sectionIndex: 1 } })).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(corrected, frequency, speed, density,
+      { ...certificate, sectionSpans: [...certificate.sectionSpans].reverse() })).toBe(false)
+  })
+
+  it('rejects forged tuning brackets and incomplete earlier-root exclusions', () => {
+    const p = path('conical', 0.02)
+    const certificate = certificateOf(boundDuctPathTuning(p, volume, speed))
+    const { lower, upper, earlierSpans, request } = certificate
+    const [first, second, ...rest] = earlierSpans
+    const last = earlierSpans.at(-1)!
+    const beforeRoot = lower + (upper - lower) / 8
+    const afterRoot = upper - (upper - lower) / 8
+    const tampered = [
+      { version: 2 },
+      { request: 'another request' },
+      { relativeTolerance: 0.05 },
+      { lower: 0 },
+      { upper: lower },
+      { upper: Infinity },
+      { upper: upper * 1.01 },
+      { upper: beforeRoot },
+      { lower: afterRoot },
+      { earlierSpans: null },
+      { earlierSpans: [] },
+      { earlierSpans: [null, ...earlierSpans.slice(1)] },
+      { earlierSpans: [{ ...first, minHz: first!.maxHz / 2 }, second, ...rest] },
+      { earlierSpans: [first, { ...second, minHz: (second!.minHz + second!.maxHz) / 2 }, ...rest] },
+      { earlierSpans: [{ minHz: 0, maxHz: 0 }, second, ...rest] },
+      { earlierSpans: [{ minHz: 0, maxHz: upper }] },
+      { earlierSpans: earlierSpans.slice(0, -1) },
+      { earlierSpans: [...earlierSpans.slice(0, -1), { ...last, maxHz: (last.minHz + lower) / 2 }] },
+      { earlierSpans: [{ minHz: 0, maxHz: lower }] },
+    ]
+    for (const change of tampered)
+      expect(verifyDuctTuningCertificate(p, volume, speed, { ...certificate, ...change } as typeof certificate),
+        JSON.stringify(change)).toBe(false)
+    expect(verifyDuctTuningCertificate(p, volume, speed,
+      { ...certificate, request: requestWith(request, 4, 0) }, { maxSplits: 0 })).toBe(false)
+    expect(verifyDuctTuningCertificate(p, volume * 2, speed, certificate)).toBe(false)
+    expect(verifyDuctTuningCertificate(p, volume, speed + 1, certificate)).toBe(false)
+    expect(verifyDuctTuningCertificate({ ...p, count: 2 }, volume, speed, certificate)).toBe(false)
+    expect(verifyDuctTuningCertificate(p, volume, speed, certificate, { maxSplits: 4095 })).toBe(false)
+    for (const malformed of [null, {}, 'certificate', { version: 1, request }])
+      expect(verifyDuctTuningCertificate(p, volume, speed, malformed as typeof certificate)).toBe(false)
+  })
+
+  it('rejects a tuning bracket crossing a duct pole even with the correct request', () => {
+    const p = path()
+    const certificate = certificateOf(boundDuctPathTuning(p, volume, speed))
+    const smallVolume = 1e-12
+    const pole = speed / (4 * p.sections[0]!.lengthMeters)
+    const estimate = ductPathTuning(p, smallVolume, speed)
+    const lower = estimate * (1 - 4.5e-6)
+    const upper = estimate * (1 + 4.5e-6)
+    expect(upper).toBeGreaterThan(pole)
+    expect(verifyDuctTuningCertificate(p, smallVolume, speed, {
+      ...certificate, request: requestWith(certificate.request, 1, smallVolume),
+      lower, upper, earlierSpans: [{ minHz: 0, maxHz: lower }],
+    })).toBe(false)
+  })
+
+  it('rejects forged velocity bounds, point witnesses, and spatial partitions', () => {
+    const p = antinodePath()
+    const certificate = certificateOf(boundDuctPathPeakVelocityRatio(p, frequency, speed, density))
+    const { lower, upper, witness, sectionSpans, request } = certificate
+    const [spans, other] = sectionSpans
+    const [first, second, ...rest] = spans!
+    const withSpans = (replacement: unknown) => [replacement, other]
+    const tampered = [
+      { version: 2 },
+      { request: 'another request' },
+      { relativeTolerance: 0.05 },
+      { lower: -1 },
+      { upper: lower * 0.999 },
+      { upper: Infinity },
+      { upper: upper * 1.01 },
+      { lower: upper },
+      { upper: lower },
+      { witness: null },
+      { witness: { ...witness, sectionIndex: -1 } },
+      { witness: { ...witness, sectionIndex: 0.5 } },
+      { witness: { ...witness, sectionIndex: 2 } },
+      { witness: { ...witness, fraction: 1.01 } },
+      { witness: { ...witness, fraction: -0.01 } },
+      { witness: { ...witness, fraction: NaN } },
+      { witness: { ...witness, fraction: 0 } },
+      { sectionSpans: null },
+      { sectionSpans: [spans] },
+      { sectionSpans: withSpans(null) },
+      { sectionSpans: withSpans([]) },
+      { sectionSpans: withSpans([null]) },
+      { sectionSpans: withSpans([{ ...first, minFraction: first!.maxFraction / 2 }, second, ...rest]) },
+      { sectionSpans: withSpans([first, { ...second, minFraction: (second!.minFraction + second!.maxFraction) / 2 }, ...rest]) },
+      { sectionSpans: withSpans([{ minFraction: 0, maxFraction: 0 }, second, ...rest]) },
+      { sectionSpans: withSpans([{ minFraction: 0, maxFraction: 2 }]) },
+      { sectionSpans: withSpans([{ minFraction: 0, maxFraction: 1 }]) },
+      { sectionSpans: withSpans(spans!.slice(0, -1)) },
+    ]
+    for (const change of tampered)
+      expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density,
+        { ...certificate, ...change } as typeof certificate), JSON.stringify(change)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density,
+      { ...certificate, request: requestWith(request, 5, 0) }, { maxSplits: 0 })).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency - 1, speed, density, certificate)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, speed + 1, density, certificate)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density * 2, certificate)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density, certificate, { maxSplits: 4095 })).toBe(false)
+    for (const malformed of [null, {}, 'certificate', { version: 1, request }])
+      expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density, malformed as typeof certificate)).toBe(false)
+  })
+
+  it('rejects velocity certificates at a pole even with the correct request', () => {
+    const p = { ...path(), sections: [{ ...path().sections[0]!, lengthMeters: 0.5 }] }
+    const certificate = certificateOf(boundDuctPathPeakVelocityRatio(p, 100, speed, density))
+    const pole = speed / 2
+    expect(verifyDuctPeakVelocityCertificate(p, pole, speed, density, {
+      ...certificate, request: requestWith(certificate.request, 1, pole),
+    })).toBe(false)
+  })
+
+  it('returns an unresolved result when the request changes before self-verification', () => {
+    function changingOptions(): DuctBoundOptions {
+      let maxSplits = 4096
+      return {
+        get maxSplits() {
+          return maxSplits--
+        },
+      }
+    }
+    const p = path()
+    expect(boundDuctPathTuning(p, volume, speed, changingOptions()))
+      .toMatchObject({ status: 'unresolved', reason: 'certificate-rejected' })
+    expect(boundDuctPathPeakVelocityRatio(p, frequency, speed, density, changingOptions()))
+      .toMatchObject({ status: 'unresolved', reason: 'certificate-rejected' })
+  })
+
+  it('fails closed for unsupported requests and bound options', () => {
+    const p = path()
+    const tuning = certificateOf(boundDuctPathTuning(p, volume, speed))
+    const velocity = certificateOf(boundDuctPathPeakVelocityRatio(p, frequency, speed, density))
+    const arrayLike = { 0: p.sections[0], length: 1 } as unknown as DuctPath['sections']
+    for (const malformedPath of [
+      null as unknown as DuctPath, { ...p, count: 0 }, { ...p, sections: arrayLike },
+      { ...p, junctionInertanceLengthsMeters: new Array<number>(1) },
+    ]) {
+      expect(verifyDuctTuningCertificate(malformedPath, volume, speed, tuning)).toBe(false)
+      expect(verifyDuctPeakVelocityCertificate(malformedPath, frequency, speed, density, velocity)).toBe(false)
+    }
+    expect(verifyDuctTuningCertificate(p, -1, speed, tuning)).toBe(false)
+    expect(verifyDuctTuningCertificate(p, volume, 0, tuning)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, 0, speed, density, velocity)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, 0, density, velocity)).toBe(false)
+    expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, 0, velocity)).toBe(false)
+    for (const options of [
+      null, 1, [], { relativeTolerance: NaN }, { relativeTolerance: 0 }, { relativeTolerance: 0.1 },
+      { maxSplits: 0.5 }, { maxSplits: -1 }, { maxSplits: 8193 },
+    ]) {
+      expect(verifyDuctTuningCertificate(p, volume, speed, tuning, options as DuctBoundOptions)).toBe(false)
+      expect(verifyDuctPeakVelocityCertificate(p, frequency, speed, density, velocity, options as DuctBoundOptions)).toBe(false)
+    }
+  })
 })
