@@ -25,6 +25,6 @@ On failure, fast-check reports a reduced counterexample and its seed and path. R
 
 ## Check the mathematical proofs
 
-The local Lean 4 project checks operating limits, circuit equations, and duct tuning invariants. See the [proof commands and assumptions](verification/lean/README.md).
+The local Lean 4 project checks numerical accuracy, circuit and radiator balance, general distributed-duct transfer, tuning and peak airspeed, DSP, operating limits, continuous-band headroom, impedance-fit diagnostics, and response summaries. With Elan installed, run `npm run verify:formal` to audit all Lean theorems and replay all eight installed-archive certificates in the Lean kernel. See the [proof commands and assumptions](verification/lean/README.md) and [solver accuracy contracts](docs/CONTRACTS.md).
 
-Contributions are distributed under the [MIT license](LICENSE). See the [release policy](PUBLISHING.md) for package and versioning rules.
+Contributions are distributed under the [MIT license](LICENSE). See the [release policy](PUBLISHING.md) and [changelog](CHANGELOG.md) for package and versioning rules.
