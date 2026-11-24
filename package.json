@@ -45,7 +45,8 @@
     "test:coverage": "vitest run --coverage",
     "test:fuzz": "vitest run src/invariants.test.ts",
     "check:pack": "node scripts/check-package.mjs",
-    "check": "npm run typecheck && npm run test:coverage && npm run build && npm run check:pack"
+    "check": "npm run typecheck && npm run test:coverage && npm run build && npm run check:pack",
+    "verify:formal": "node scripts/verify-formal.mjs"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "5.0.3",

@@ -1,8 +1,10 @@
 module
 
 public import Mathlib.Basic.Complex.Basic
+public import Mathlib.Analysis.Complex.Norm
 import Mathlib.Tactic.FieldSimp
 import Mathlib.Tactic.Linarith
+import Mathlib.Tactic.Positivity
 import Mathlib.Tactic.Ring
 
 @[expose] public noncomputable section
@@ -13,21 +15,21 @@ namespace Electroacoustics.Circuit
 def rmsPower (voltage current : ℂ) : ℝ :=
   voltage.re * current.re + voltage.im * current.im
 
-private theorem power_add (a b c : ℂ) :
+theorem power_add (a b c : ℂ) :
     rmsPower (a + b) c = rmsPower a c + rmsPower b c := by
   simp only [rmsPower, Complex.add_re, Complex.add_im]
   ring
 
-private theorem power_scale (scale : ℝ) (a b : ℂ) :
+theorem power_scale (scale : ℝ) (a b : ℂ) :
     rmsPower ((scale : ℂ) * a) b = scale * rmsPower a b := by
   simp only [rmsPower, Complex.mul_re, Complex.mul_im, Complex.ofReal_re, Complex.ofReal_im]
   ring
 
-private theorem power_comm (a b : ℂ) : rmsPower a b = rmsPower b a := by
+theorem power_comm (a b : ℂ) : rmsPower a b = rmsPower b a := by
   unfold rmsPower
   ring
 
-private theorem power_at_impedance (impedance current : ℂ) :
+theorem power_at_impedance (impedance current : ℂ) :
     rmsPower (impedance * current) current = impedance.re * rmsPower current current := by
   simp only [rmsPower, Complex.mul_re, Complex.mul_im]
   ring
@@ -240,5 +242,52 @@ theorem rewired_impedance (voltage current : ℂ) {series parallel : ℝ}
   have hparallel := Complex.ofReal_ne_zero.mpr hp
   rw [Complex.ofReal_mul]
   field_simp
+
+/-- The real part of a real numerator divided by a passive impedance. -/
+theorem real_div_nonnegative {z : ℂ} {k : ℝ} (hz : 0 ≤ z.re) (hk : 0 ≤ k) :
+    0 ≤ ((k : ℂ) / z).re := by
+  rw [Complex.div_re]
+  simp only [Complex.ofReal_re, Complex.ofReal_im, zero_mul, zero_div, add_zero]
+  exact div_nonneg (mul_nonneg hk hz) (Complex.normSq_nonneg z)
+
+theorem lumped_port_admittance_nonneg {resistance reactance : ℝ} (hr : 0 ≤ resistance) :
+    0 ≤ (1 / (⟨resistance, reactance⟩ : ℂ)).re := by
+  simpa using real_div_nonnegative (z := ⟨resistance, reactance⟩) hr (zero_le_one (α := ℝ))
+
+theorem terminal_impedance_formula {electrical mechanical admittance : ℂ}
+    {count area coupling : ℝ} {voltage current velocity pressure : ℂ}
+    (h : Equations electrical mechanical admittance count area coupling
+      voltage current velocity pressure)
+    (hd : denominator electrical mechanical admittance count area coupling ≠ 0)
+    (hv : voltage ≠ 0) (hm : mechanicalNumerator mechanical admittance count area ≠ 0) :
+    voltage / current = electrical +
+      ((coupling ^ 2 : ℝ) : ℂ) * admittance / mechanicalNumerator mechanical admittance count area := by
+  have hc := (cleared_solution h hd).2
+  rw [hc]
+  rw [div_div_eq_mul_div, mul_div_mul_left _ _ hv]
+  rw [denominator, add_div, mul_div_cancel_right₀ _ hm]
+
+theorem coil_loss_rewired (current : ℂ) (series parallel resistance : ℝ) (hp : parallel ≠ 0) :
+    ‖(parallel : ℂ) * current / (parallel : ℂ)‖ ^ 2 * resistance * (series * parallel) =
+      (series * parallel) * resistance * rmsPower current current := by
+  rw [mul_comm (parallel : ℂ), mul_div_cancel_right₀ _ (Complex.ofReal_ne_zero.mpr hp), pow_two,
+    Complex.norm_mul_self_eq_normSq, Complex.normSq_apply, rmsPower]
+  ring
+
+/-- Frequency cancels in the ideal inductance-free, mass-controlled pressure. -/
+theorem mass_controlled_limit {omega density solidAngle distance area voltage coupling resistance mass : ℝ}
+    (hw : 0 < omega) :
+    (omega * density / (solidAngle * distance)) * area *
+      (voltage * coupling / (resistance * omega * mass)) =
+        density * voltage * coupling * area / (resistance * mass * solidAngle * distance) := by
+  by_cases hr : resistance = 0
+  · simp [hr]
+  by_cases hm : mass = 0
+  · simp [hm]
+  by_cases hs : solidAngle = 0
+  · simp [hs]
+  by_cases hd : distance = 0
+  · simp [hd]
+  field_simp [hw.ne', hr, hm, hs, hd]
 
 end Electroacoustics.Circuit

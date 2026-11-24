@@ -1,7 +1,20 @@
 module
 
+public import Electroacoustics.Accuracy
+public import Electroacoustics.BandCertificate
+public import Electroacoustics.BandHeadroom
 public import Electroacoustics.Circuit
 public import Electroacoustics.Design
 public import Electroacoustics.Duct
+public import Electroacoustics.DuctCertificate
+public import Electroacoustics.DuctInterval
+public import Electroacoustics.DuctTransfer
+public import Electroacoustics.Filters
+public import Electroacoustics.ImpedanceCertificate
+public import Electroacoustics.Interval
+public import Electroacoustics.Numerics
 public import Electroacoustics.Operating
+public import Electroacoustics.Radiator
+public import Electroacoustics.Summaries
+public import Electroacoustics.Transcendentals
 import Electroacoustics.Audit
