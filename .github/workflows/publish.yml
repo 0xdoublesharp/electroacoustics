@@ -1,6 +1,9 @@
-name: Stage npm release
+name: Publish npm release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -40,7 +43,7 @@ jobs:
           if-no-files-found: error
           retention-days: 3
 
-  stage:
+  publish:
     needs: verify
     runs-on: ubuntu-latest
     environment: npm-release
@@ -57,5 +60,5 @@ jobs:
         with:
           name: npm-package
           path: ${{ runner.temp }}/package
-      - name: Stage verified archive with npm OIDC
-        run: npm stage publish "$RUNNER_TEMP/package/"*.tgz --access public
+      - name: Publish verified archive with npm OIDC
+        run: npm publish "$RUNNER_TEMP/package/"*.tgz --access public --provenance
